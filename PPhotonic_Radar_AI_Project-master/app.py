@@ -563,20 +563,32 @@ with tab1:
 
         # Tracking Plot (3D Upgrade)
         st.subheader("🎯 Target Tracking (Kalman Filter) — 3D View")
-        if st.session_state.track_history:
-            hx, hy = zip(*st.session_state.track_history)
-            hz = list(range(len(hx)))  # simple time index for z-axis
-            fig3d = go.Figure()
-            fig3d.add_trace(go.Scatter3d(x=hx, y=hy, z=hz, mode='lines+markers',
-                                         line=dict(color='lime', width=4),
-                                         marker=dict(size=4, color='cyan')))
-            fig3d.update_layout(scene=dict(xaxis_title='X Position (m)',
-                                           yaxis_title='Y Position (m)',
-                                           zaxis_title='Time Index'),
-                                margin=dict(l=0, r=0, t=30, b=0),
-                                height=400, paper_bgcolor='rgba(0,0,0,0)',
-                                font=dict(color='#00f0ff'))
-            st.plotly_chart(fig3d, use_container_width=True)
+        if st.session_state.track_history and len(st.session_state.track_history) > 0:
+            # Extract position data from track history
+            hx, hy = [], []
+            for entry in st.session_state.track_history:
+                if 'tracks' in entry and entry['tracks']:
+                    for track_id, track_data in entry['tracks'].items():
+                        if 'position' in track_data:
+                            x, y = track_data['position']
+                            hx.append(x)
+                            hy.append(y)
+            
+            if hx and hy:
+                hz = list(range(len(hx)))  # simple time index for z-axis
+                fig3d = go.Figure()
+                fig3d.add_trace(go.Scatter3d(x=hx, y=hy, z=hz, mode='lines+markers',
+                                             line=dict(color='lime', width=4),
+                                             marker=dict(size=4, color='cyan')))
+                fig3d.update_layout(scene=dict(xaxis_title='X Position (m)',
+                                               yaxis_title='Y Position (m)',
+                                               zaxis_title='Time Index'),
+                                    margin=dict(l=0, r=0, t=30, b=0),
+                                    height=400, paper_bgcolor='rgba(0,0,0,0)',
+                                    font=dict(color='#00f0ff'))
+                st.plotly_chart(fig3d, use_container_width=True)
+            else:
+                st.info("No track positions available yet.")
         else:
             st.info("No tracking history yet — generate data to populate 3D track view.")
 
