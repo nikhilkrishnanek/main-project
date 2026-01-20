@@ -3,16 +3,17 @@ numpy
 scipy
 matplotlib
 streamlit
-torch
-torchvision
-torchaudio
+# PyTorch - Install with: pip install torch --index-url https://download.pytorch.org/whl/cpu
+# Or for GPU: pip install torch torchvision torchaudio
 opencv-python
-pyrtlsdr
-kafka-python
 psutil
 seaborn
 scikit-learn
 plotly
+
+# Optional (for RTL-SDR hardware support)
+# pyrtlsdr
+# kafka-python
 
 # Configuration & logging helpers
 pyyaml

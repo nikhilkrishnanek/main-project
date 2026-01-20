@@ -14,12 +14,27 @@ os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'  # Hide all TF info/warning/error logs
 
 def check_dependencies():
     """Verify required packages are installed."""
-    required = ['streamlit', 'torch', 'numpy', 'pandas']
+    # Map package names to module names where they differ
+    packages = {
+        'streamlit': 'streamlit',
+        'torch': 'torch',
+        'numpy': 'numpy',
+        'pandas': 'pandas',
+        'scipy': 'scipy',
+        'matplotlib': 'matplotlib',
+        'pyyaml': 'yaml',
+        'python-json-logger': 'pythonjsonlogger',
+        'opencv-python': 'cv2',
+        'psutil': 'psutil',
+        'seaborn': 'seaborn',
+        'scikit-learn': 'sklearn',
+        'plotly': 'plotly'
+    }
     missing = []
     
-    for package in required:
+    for package, module in packages.items():
         try:
-            __import__(package)
+            __import__(module)
         except ImportError:
             missing.append(package)
     
@@ -36,7 +51,7 @@ def launch():
     print("-" * 60)
     
     try:
-        import torch
+        import torch  # type: ignore
         if torch.cuda.is_available():
             print(f"✅ GPU Acceleration Detected: {torch.cuda.get_device_name(0)}")
         else:

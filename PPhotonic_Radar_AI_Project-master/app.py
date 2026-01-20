@@ -57,6 +57,88 @@ _startup = run_startup_checks()
 # ===============================
 st.set_page_config(page_title="AI Cognitive Photonic Radar", layout="wide")
 
+# Simple UI mode: set True for a very minimal interface
+SIMPLE_UI = True
+
+if SIMPLE_UI:
+    st.title("Photonic Radar — Simple UI")
+    st.write("Minimal interface for quick inspection and demo.")
+    # Visualization controls
+    colormap_rd = st.selectbox("RD colormap", ['Viridis', 'Cividis', 'Plasma', 'Magma', 'Jet'], index=0)
+    colormap_sp = st.selectbox("Spectrogram colormap", ['Cividis', 'Viridis', 'Plasma', 'Magma', 'Jet'], index=0)
+    x_min, x_max = st.slider("X axis range", 0, 127, (0, 127))
+    y_min, y_max = st.slider("Y axis range", 0, 127, (0, 127))
+    z_min, z_max = st.slider("Intensity (z) range", 0.0, 1.0, (0.0, 1.0), step=0.01)
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.header("RD Map")
+        rd_map_sample = np.zeros((128, 128))
+        try:
+            fig_rd = go.Figure(data=go.Heatmap(z=rd_map_sample, colorscale=colormap_rd, zmin=z_min, zmax=z_max))
+            fig_rd.update_layout(title='RD Map (Heatmap)', xaxis_title='Range bins', yaxis_title='Doppler bins', coloraxis_showscale=True)
+            fig_rd.update_xaxes(range=[x_min, x_max])
+            fig_rd.update_yaxes(range=[y_min, y_max])
+            st.plotly_chart(fig_rd, width='stretch')
+        except Exception:
+            st.image(rd_map_sample, caption="RD Map (placeholder)")
+        st.button("Refresh RD Map")
+    with c2:
+        st.header("Spectrogram")
+        spec_sample = np.zeros((128, 128))
+        try:
+            fig_sp = go.Figure(data=go.Heatmap(z=spec_sample, colorscale=colormap_sp, zmin=z_min, zmax=z_max))
+            fig_sp.update_layout(title='Spectrogram (Heatmap)', xaxis_title='Time', yaxis_title='Frequency', coloraxis_showscale=True)
+            fig_sp.update_xaxes(range=[x_min, x_max])
+            fig_sp.update_yaxes(range=[y_min, y_max])
+            st.plotly_chart(fig_sp, width='stretch')
+        except Exception:
+            st.image(spec_sample, caption="Spectrogram (placeholder)")
+        st.button("Refresh Spectrogram")
+
+    st.write("---")
+    show_3d = st.checkbox("Show 3D surface (RD Map)")
+    if st.button("Run Detection"):
+        st.info("Running detection (simplified)...")
+        try:
+            rd = np.random.rand(64, 64)
+            spec = np.random.rand(64, 64)
+            # clearer 2D results with colorbar and labels
+            fig_rd_res = go.Figure(data=go.Heatmap(z=rd, colorscale=colormap_rd, zmin=z_min, zmax=z_max))
+            fig_rd_res.update_layout(title='RD Map (Result)', xaxis_title='Range bins', yaxis_title='Doppler bins')
+            # clip ranges to actual data size
+            x_max_clipped = max(0, min(x_max, rd.shape[1]-1))
+            x_min_clipped = max(0, min(x_min, x_max_clipped))
+            y_max_clipped = max(0, min(y_max, rd.shape[0]-1))
+            y_min_clipped = max(0, min(y_min, y_max_clipped))
+            fig_rd_res.update_xaxes(range=[x_min_clipped, x_max_clipped])
+            fig_rd_res.update_yaxes(range=[y_min_clipped, y_max_clipped])
+            st.plotly_chart(fig_rd_res, width='stretch')
+
+            fig_sp_res = go.Figure(data=go.Heatmap(z=spec, colorscale=colormap_sp, zmin=z_min, zmax=z_max))
+            fig_sp_res.update_layout(title='Spectrogram (Result)', xaxis_title='Time', yaxis_title='Frequency')
+            x_max_clipped = max(0, min(x_max, spec.shape[1]-1))
+            x_min_clipped = max(0, min(x_min, x_max_clipped))
+            y_max_clipped = max(0, min(y_max, spec.shape[0]-1))
+            y_min_clipped = max(0, min(y_min, y_max_clipped))
+            fig_sp_res.update_xaxes(range=[x_min_clipped, x_max_clipped])
+            fig_sp_res.update_yaxes(range=[y_min_clipped, y_max_clipped])
+            st.plotly_chart(fig_sp_res, width='stretch')
+
+            if show_3d:
+                # build a 3D surface for RD map
+                x = np.arange(rd.shape[1])
+                y = np.arange(rd.shape[0])
+                fig_3d = go.Figure(data=[go.Surface(z=rd, x=x, y=y, colorscale=colormap_rd)])
+                fig_3d.update_layout(title='RD Map 3D Surface', scene=dict(xaxis_title='Range', yaxis_title='Doppler', zaxis_title='Intensity'))
+                st.plotly_chart(fig_3d, width='stretch')
+
+            st.success("Detection complete")
+        except Exception as e:
+            st.error(f"Detection error: {e}")
+
+    st.stop()
+
 # ===============================
 # CUSTOM CSS: PROFESSIONAL COMMAND CENTER
 # ===============================
@@ -355,6 +437,9 @@ st.markdown("""
     }
 </style>
 """, unsafe_allow_html=True)
+
+st.markdown("""
+<style>
     /* Radar-like scanning animation for aesthetic */
     @keyframes scan {
         0% { border-top: 1px solid #00f0ff; }
@@ -550,10 +635,54 @@ else:
 # ===============================
 # DASHBOARD
 # ===============================
-st.markdown("## 📡 AI-Enabled Cognitive Photonic Radar")
+# Enhanced Header
+col1, col2, col3 = st.columns([1, 2, 1])
 
+with col1:
+    st.markdown("")
+
+with col2:
+    st.markdown("""
+    <div style='text-align: center; margin: 20px 0;'>
+        <h1 style='margin: 0; font-size: 2.8rem;'>🛰️ PHOTONIC RADAR COMMAND CENTER</h1>
+        <p style='color: #a0b4ff; letter-spacing: 2px; margin-top: 10px; font-size: 0.95rem;'>
+            ⚡ AI-Enabled Cognitive Defense System | Real-Time Threat Detection & Tracking
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+
+with col3:
+    st.markdown("")
+
+# Status Bar
+status_col1, status_col2, status_col3, status_col4 = st.columns(4)
+
+try:
+    import psutil
+    cpu_usage = psutil.cpu_percent()
+    memory_usage = psutil.virtual_memory().percent
+except:
+    cpu_usage = 0
+    memory_usage = 0
+
+with status_col1:
+    status = "🟢 ACTIVE" if st.session_state.logged_in else "🔴 OFFLINE"
+    st.metric("System Status", status, border=True)
+
+with status_col2:
+    st.metric("CPU Usage", f"{cpu_usage:.1f}%", border=True)
+
+with status_col3:
+    st.metric("Memory", f"{memory_usage:.1f}%", border=True)
+
+with status_col4:
+    st.metric("Operator", st.session_state.user, border=True)
+
+st.markdown("---")
+
+# Create Professional Tabs
 tab1, tab2, tab3, tab4, tab5 = st.tabs(
-    ["Real-Time Analytics", "Explainable AI (XAI)", "Photonic Parameters", "System Logs", "Admin Panel"]
+    ["📊 Real-Time Analytics", "🧠 Explainable AI", "⚙️ System Config", "📋 Logs", "👨‍💼 Admin"]
 )
 
 # ===============================
@@ -888,31 +1017,52 @@ with tab2:
     st.subheader("Explainable AI: Grad-CAM Visualizations")
     st.write("Visualizing which parts of the input maps influenced the AI's decision.")
     
-    col_xai1, col_xai2 = st.columns(2)
-    
-    # We need to enable gradients for Grad-CAM
-    cam_rd = grad_cam_pytorch(radar_model, rd_t, spec_t, meta_t, radar_model.rd_branch.conv2)
-    cam_spec = grad_cam_pytorch(radar_model, rd_t, spec_t, meta_t, radar_model.spec_branch.conv2)
+    try:
+        col_xai1, col_xai2 = st.columns(2)
+        
+        # Compute Grad-CAM for both branches
+        grad_cam_result_rd = grad_cam_pytorch(radar_model, rd_t, spec_t, meta_t, radar_model.rd_branch.conv2)
+        grad_cam_result_spec = grad_cam_pytorch(radar_model, rd_t, spec_t, meta_t, radar_model.spec_branch.conv2)
 
-    with col_xai1:
-        st.write("**RD Map Heatmap**")
-        if cam_rd.any():
-            fig_rd, ax_rd = plt.subplots()
-            ax_rd.imshow(rd_norm, cmap='gray')
-            ax_rd.imshow(cam_rd, cmap='jet', alpha=0.5)
-            st.pyplot(fig_rd)
-        else:
-            st.warning("Grad-CAM unavailable for RD Map")
+        with col_xai1:
+            st.write("**RD Map Heatmap**")
+            if grad_cam_result_rd is not None:
+                cam_rd, rd_success = grad_cam_result_rd
+                if rd_success and np.any(cam_rd):
+                    fig_rd, ax_rd = plt.subplots()
+                    ax_rd.imshow(rd_norm, cmap='gray')
+                    ax_rd.imshow(cam_rd, cmap='jet', alpha=0.5)
+                    ax_rd.set_title("RD Map Grad-CAM")
+                    st.pyplot(fig_rd)
+                else:
+                    st.info("Grad-CAM unavailable - showing RD Map")
+                    st.image(rd_norm, caption="RD Map", use_column_width=True, channels='GRAY')
+            else:
+                st.image(rd_norm, caption="RD Map", use_column_width=True, channels='GRAY')
 
-    with col_xai2:
-        st.write("**Spectrogram Heatmap**")
-        if cam_spec.any():
-            fig_sp, ax_sp = plt.subplots()
-            ax_sp.imshow(spec_norm, cmap='gray')
-            ax_sp.imshow(cam_spec, cmap='jet', alpha=0.5)
-            st.pyplot(fig_sp)
-        else:
-            st.warning("Grad-CAM unavailable for Spectrogram")
+        with col_xai2:
+            st.write("**Spectrogram Heatmap**")
+            if grad_cam_result_spec is not None:
+                cam_spec, spec_success = grad_cam_result_spec
+                if spec_success and np.any(cam_spec):
+                    fig_sp, ax_sp = plt.subplots()
+                    ax_sp.imshow(spec_norm, cmap='gray')
+                    ax_sp.imshow(cam_spec, cmap='jet', alpha=0.5)
+                    ax_sp.set_title("Spectrogram Grad-CAM")
+                    st.pyplot(fig_sp)
+                else:
+                    st.info("Grad-CAM unavailable - showing Spectrogram")
+                    st.image(spec_norm, caption="Spectrogram", use_column_width=True, channels='GRAY')
+            else:
+                st.image(spec_norm, caption="Spectrogram", use_column_width=True, channels='GRAY')
+    except Exception as e:
+        st.error(f"XAI Visualization Error: {e}")
+        st.info("Showing raw input maps instead...")
+        col_xai1, col_xai2 = st.columns(2)
+        with col_xai1:
+            st.image(rd_norm, caption="RD Map", use_column_width=True, channels='GRAY')
+        with col_xai2:
+            st.image(spec_norm, caption="Spectrogram", use_column_width=True, channels='GRAY')
 
 # ===============================
 # TAB 3: PHOTONIC PARAMETERS

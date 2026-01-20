@@ -14,15 +14,15 @@ Deterministic behavior via `seed` parameter.
 Equations (inline):
 
 - Laser phase noise (Wiener):
-  $\phi(t+\Delta t) = \phi(t) + \sqrt{2\pi \Delta f}\,\sqrt{\Delta t}\,N(0,1)$
-  where $\Delta f$ is laser linewidth in Hz. This integrates white frequency noise to phase.
+  $\\phi(t+\\Delta t) = \\phi(t) + \\sqrt{2\\pi \\Delta f}\\,\\sqrt{\\Delta t}\\,N(0,1)$
+  where $\\Delta f$ is laser linewidth in Hz. This integrates white frequency noise to phase.
 
 - Heterodyne RF (optical beat):
-  $s_{RF}(t) = \mathrm{Re}\{E_1(t) e^{j\omega_1 t} + E_2(t) e^{j\omega_2 t}\}^2 \approx A\cos((\omega_1-\omega_2)t + \phi_1(t)-\phi_2(t))$
+  $s_{RF}(t) = \\mathrm{Re}\\{E_1(t) e^{j\\omega_1 t} + E_2(t) e^{j\\omega_2 t}\\}^2 \\approx A\\cos((\\omega_1-\\omega_2)t + \\phi_1(t)-\\phi_2(t))$
 
-- Time-delay jitter: apply small random delays $\tau_i \sim \mathcal{N}(0,\sigma_{\tau}^2)$ per channel to emulate jitter.
+- Time-delay jitter: apply small random delays $\\tau_i \\sim \\mathcal{N}(0,\\sigma_{\\tau}^2)$ per channel to emulate jitter.
 
-- Coherence loss from temperature drift: $\mathrm{coherence}(t) = \exp(-|\Delta T(t)|/T_{\mathrm{coh}})$
+- Coherence loss from temperature drift: $\\mathrm{coherence}(t) = \\exp(-|\\Delta T(t)|/T_{\\mathrm{coh}})$
 
 The implementation favors simplicity and speed (NumPy-only); suitable for simulation pipelines.
 
