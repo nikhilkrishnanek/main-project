@@ -12,6 +12,7 @@ Components:
 Author: Principal Photonic Radar Scientist
 """
 
+import numpy as np
 import streamlit as st
 from src.simulation.photonic import PhotonicConfig
 from src.simulation.environment import ChannelConfig, Target
@@ -131,7 +132,7 @@ def render_sidebar() -> tuple:
     for i, t in enumerate(st.session_state.targets):
         with st.sidebar.container():
             c1, c2 = st.columns([5, 1])
-            c1.markdown(f"**{t.description}**  \n`{t.range_m}m | {t.velocity_m_s}m/s`", help=f"RCS: {t.rcs_db} dB")
+            c1.markdown(f"**{t.description}**  \n`{t.range_m}m | {t.velocity_m_s}m/s`", help=f"RCS: {t.rcs_dbsm} dBsm")
             if c2.button("🗑️", key=f"del_{i}", help="Remove target"):
                 del st.session_state.targets[i]
                 st.rerun()

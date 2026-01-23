@@ -120,7 +120,8 @@ def render_plots(frame: RadarFrame):
                 height=420,
                 hovermode='closest'
             )
-            st.plotly_chart(fig, use_container_width=True, help="Visualizes target distance vs. velocity using 2D FFT.")
+            st.plotly_chart(fig, width="stretch")
+            st.caption("Visualizes target distance vs. velocity using 2D FFT.")
 
         # --- Spectrogram ---
         st.markdown('<div class="section-header">🌊 Micro-Doppler Time-Frequency Signature</div>', unsafe_allow_html=True)
@@ -139,7 +140,8 @@ def render_plots(frame: RadarFrame):
             font=dict(color="#ABB2BF", size=10),
             height=320
         )
-        st.plotly_chart(fig_spec, use_container_width=True, help="Reveals mechanical vibrations (propellers, turbines) over time.")
+        st.plotly_chart(fig_spec, width="stretch")
+        st.caption("Reveals mechanical vibrations (propellers, turbines) over time.")
 
     with tab2:
         st.markdown('<div class="section-header">📉 Raw Photodetector Output (Time Domain)</div>', unsafe_allow_html=True)
@@ -162,7 +164,8 @@ def render_plots(frame: RadarFrame):
             height=350,
             hovermode='x'
         )
-        st.plotly_chart(fig_raw, use_container_width=True, help="Signal directly from the high-speed photodiode after optical heterodyning.")
+        st.plotly_chart(fig_raw, width="stretch")
+        st.caption("Signal directly from the high-speed photodiode after optical heterodyning.")
     
     with tab3:
         st.markdown('<div class="section-header">📊 Quantitative Research Benchmarks</div>', unsafe_allow_html=True)
@@ -179,7 +182,7 @@ def render_plots(frame: RadarFrame):
             fig_pd = go.Figure(go.Scatter(x=snr_sweep, y=pd_vals, mode='lines', line=dict(color='#00FFCC', width=3)))
             fig_pd.update_layout(title="Sensitivity: Pd vs SNR", xaxis_title="SNR (dB)", yaxis_title="Prob. Detection", height=300, 
                                paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,10,10,0.2)', font=dict(color="#888"))
-            st.plotly_chart(fig_pd, use_container_width=True)
+            st.plotly_chart(fig_pd, width="stretch")
             st.caption("Validates the radar's ability to detect weak signals. Ideal for Swerling-I fluctuating targets.")
 
             # 2. AI Accuracy vs Noise
@@ -189,7 +192,7 @@ def render_plots(frame: RadarFrame):
                     fig_acc = go.Figure(go.Scatter(x=np.linspace(-10, 20, 10), y=acc_vals, mode='lines+markers', line=dict(color='#FF3366')))
                     fig_acc.update_layout(title="Robustness: AI Accuracy vs SNR", xaxis_title="SNR (dB)", yaxis_title="Accuracy", height=300,
                                         paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,10,10,0.2)', font=dict(color="#888"))
-                    st.plotly_chart(fig_acc, use_container_width=True)
+                    st.plotly_chart(fig_acc, width="stretch")
             else:
                 st.write("Click 'Run AI Stress Test' to evaluate neural network performance under noise.")
 
@@ -200,7 +203,7 @@ def render_plots(frame: RadarFrame):
             fig_pfa = go.Figure(go.Scatter(x=thresh_sweep, y=pfa_vals, mode='lines', line=dict(color='#FFA500')))
             fig_pfa.update_layout(title="Reliability: Pfa vs Threshold", xaxis_title="Threshold (dB above noise)", yaxis_title="False Alarm Rate", 
                                 yaxis_type="log", height=300, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,10,10,0.2)', font=dict(color="#888"))
-            st.plotly_chart(fig_pfa, use_container_width=True)
+            st.plotly_chart(fig_pfa, width="stretch")
             st.caption("Measures system susceptibility to false triggers. Essential for setting operational thresholds.")
 
             # 4. Latency scaling
@@ -209,7 +212,7 @@ def render_plots(frame: RadarFrame):
             fig_lat = go.Figure(go.Scatter(x=comp_factors, y=lat_vals, mode='lines+markers', line=dict(color='#00CCFF')))
             fig_lat.update_layout(title="Scalability: Latency vs Data Volume", xaxis_title="Signal Complexity Factor", yaxis_title="Runtime (ms)", 
                                 height=300, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(10,10,10,0.2)', font=dict(color="#888"))
-            st.plotly_chart(fig_lat, use_container_width=True)
+            st.plotly_chart(fig_lat, width="stretch")
             st.caption("Benchmarks the computational efficiency of the DSP + AI pipeline.")
         s = frame.stats 
         perf = frame.performance
@@ -256,8 +259,8 @@ def main():
         # Metrics Header
         metrics = frame.metrics
         metrics.update({
-            'range_res': frame.performance.range_resolution_m,
-            'vel_res': frame.performance.velocity_resolution_m_s,
+            'range_res': frame.performance.range_resolution,
+            'vel_res': frame.performance.velocity_resolution,
             'ai_conf': frame.prediction.confidence
         })
         render_metrics(metrics)

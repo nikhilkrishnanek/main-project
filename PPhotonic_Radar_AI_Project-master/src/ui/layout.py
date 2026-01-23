@@ -98,12 +98,12 @@ def run_loop(rd_plot, spec_plot, ai_table, log_feed, config):
         with rd_plot.container():
             fig_rd = go.Figure(data=go.Heatmap(z=rd_map, colorscale='Viridis'))
             fig_rd.update_layout(title="Range-Doppler Map", margin=dict(l=20,r=20,t=40,b=20))
-            st.plotly_chart(fig_rd, use_container_width=True, key=f"rd_{step}")
+            st.plotly_chart(fig_rd, width="stretch", key=f"rd_{step}")
             
         with spec_plot.container():
             fig_sp = go.Figure(data=go.Heatmap(z=spec, colorscale='Magma'))
             fig_sp.update_layout(title="Micro-Doppler Spectrogram", margin=dict(l=20,r=20,t=40,b=20))
-            st.plotly_chart(fig_sp, use_container_width=True, key=f"sp_{step}")
+            st.plotly_chart(fig_sp, width="stretch", key=f"sp_{step}")
             
         with ai_table.container():
             st.markdown("### AI Classification Results")
