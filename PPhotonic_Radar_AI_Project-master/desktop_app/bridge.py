@@ -51,9 +51,13 @@ class RadarWorker(QObject):
             "noise_level_db": scenario.channel_config.noise_level_db
         }
         
+        
         sim_targets = []
         for i, t in enumerate(scenario.targets):
-            angle_rad = np.random.uniform(0, 2 * np.pi)
+            # Optimizing angle for Demo: 
+            # Place targets in 10-50 degree sector so scanning beam hits them immediately.
+            angle_rad = np.deg2rad(10 + (i * 10) % 40) 
+            
             r = t.range_m
             px = r * np.cos(angle_rad)
             py = r * np.sin(angle_rad)

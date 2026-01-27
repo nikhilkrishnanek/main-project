@@ -154,7 +154,7 @@ class TrackManager:
                 "confidence": self._calculate_confidence(t),
                 "age": t.age
             }
-            for t in self.tracks if t.state != TrackState.PROVISIONAL or t.hits > 1
+            for t in self.tracks if t.state != TrackState.PROVISIONAL or t.hits >= 1
         ]
 
     def _calculate_confidence(self, track: RadarTrack) -> float:
