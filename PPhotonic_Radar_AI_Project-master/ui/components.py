@@ -18,7 +18,7 @@ from photonic.signals import PhotonicConfig
 from photonic.environment import ChannelConfig, Target
 from photonic.noise import NoiseConfig
 from photonic.scenarios import ScenarioGenerator
-from ai.model import list_classes
+from ai_models.model import list_classes
 import plotly.graph_objects as go
 import plotly.express as px
 
