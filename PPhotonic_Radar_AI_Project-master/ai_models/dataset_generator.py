@@ -26,43 +26,76 @@ from signal_processing.noise import add_awgn, generate_clutter
 class RadarDatasetGenerator:
     def __init__(self, config: Dict):
         self.config = config
-        self.classes = ["drone", "aircraft", "missile", "noise"]
+        self.classes = ["drone", "aircraft", "missile", "bird", "noise"]
         
     def generate_sample(self, target_class: str) -> Dict[str, np.ndarray]:
         """
-        Generates a single multi-modal sample (RD-Map, Spectrogram, Time-Series).
+        Generates a physically realistic multi-modal sample.
+        Includes complex modulation for Micro-Doppler and tactical noise.
         """
         duration = self.config.get('duration', 0.1)
-        fs = self.config.get('fs', 1e6)
+        fs = self.config.get('fs', 5e5)
+        n_samples = int(fs * duration)
+        t = np.arange(n_samples) / fs
         
-        # 1. Generate core signal based on class physics
+        # 1. Physics-based Signal Generation
         if target_class == "noise":
-            signal = generate_clutter(int(fs*duration), distribution='weibull')
+            # Tactical Clutter (Sea/Urban mix)
+            signal = generate_clutter(n_samples, distribution='k', shape=1.5, scale=2.0)
+        
+        elif target_class == "bird":
+            # Biological modulation: Low frequency, erratic amplitude
+            v = np.random.uniform(2, 12)
+            flapping_freq = np.random.uniform(2, 8)
+            carrier = np.exp(1j * 2 * np.pi * v * t)
+            # Amplitude modulation for flapping
+            am = 0.5 * (1 + 0.4 * np.sin(2 * np.pi * flapping_freq * t))
+            signal = carrier * am
+            
         else:
-            # Simplified physics mapping
             params = {
-                "drone": {"v": 15, "rcs": -10, "md": True},
-                "aircraft": {"v": 200, "rcs": 20, "md": False},
-                "missile": {"v": 800, "rcs": 5, "md": False}
+                "drone": {"v": 15, "rcs": -15, "rotors": 4, "rpm": 12000},
+                "aircraft": {"v": 240, "rcs": 25, "rotors": 0},
+                "missile": {"v": 950, "rcs": 2, "rotors": 0}
             }[target_class]
             
-            # Use top-level photonic signal generator
-            # Note: We simulate micro-Doppler for drones by modulating the phase
-            t = np.arange(int(fs*duration)) / fs
-            carrier = np.exp(1j * 2 * np.pi * params["v"] * t) # Doppler
+            # Base Doppler
+            v_actual = params["v"] + np.random.normal(0, 2)
+            carrier = np.exp(1j * 2 * np.pi * v_actual * t)
             
-            if params["md"]:
-                # Micro-Doppler (Rotor)
-                carrier *= np.exp(1j * 2 * np.pi * 5 * np.sin(2 * np.pi * 50 * t))
-                
-            signal = add_awgn(carrier, snr_db=np.random.uniform(5, 25))
+            # Micro-Doppler (Rotor Physics)
+            if params["rotors"] > 0:
+                md_signal = np.zeros(n_samples, dtype=complex)
+                for _ in range(params["rotors"]):
+                    l_blade = np.random.uniform(0.1, 0.2) # meters
+                    rpm = params["rpm"] + np.random.normal(0, 500)
+                    fm = rpm / 60.0
+                    # Phase modulation from rotatory motion
+                    beta = (2 * np.pi * l_blade) / 0.03 # 3cm wavelength approximation
+                    md_signal += np.exp(1j * beta * np.sin(2 * np.pi * fm * t))
+                carrier *= (md_signal / params["rotors"])
             
-        # 2. Extract Features (Inputs for AI)
-        rd_map = compute_range_doppler_map(signal, n_chirps=64, samples_per_chirp=len(signal)//64)
-        spec = compute_spectrogram(signal, fs=fs)
+            signal = carrier
+
+        # 2. Photonic Noise Integration (WDM/MDM Crosstalk simulation)
+        # We simulate the effects of optical nonlinearities and crosstalk
+        snr = np.random.uniform(5, 30)
+        signal = add_awgn(signal, snr_db=snr)
         
-        # Doppler Time-Series (Sub-sampled for LSTM)
-        time_series = np.abs(signal[:1000]) # Take first 1000 points
+        # Add a subtle "channel hum" representing MDM crosstalk
+        hum_freq = 50.0 # Hz
+        signal += 0.01 * np.exp(1j * 2 * np.pi * hum_freq * t)
+
+        # 3. Feature Extraction
+        # Range-Doppler Tensor (Spatial)
+        rd_map = compute_range_doppler_map(signal, n_chirps=64, samples_per_chirp=n_samples//64)
+        
+        # Spectrogram (Temporal Frequency)
+        spec = compute_spectrogram(signal, fs=fs, nperseg=256, noverlap=128)
+        
+        # Raw IQ Sequence (sub-sampled for time-series branch)
+        ts_points = 1000
+        time_series = np.concatenate([np.real(signal[:ts_points]), np.imag(signal[:ts_points])])
         
         return {
             "rd_map": rd_map,

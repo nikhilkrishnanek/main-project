@@ -73,8 +73,8 @@ class ScenarioGenerator:
             name="Drone Swarm",
             description="Multiple small UAVs maximizing range resolution challenge.",
             targets=targets,
-            channel_config=ChannelConfig(noise_level_db=-60),
-            noise_config=NoiseConfig(rin_db_hz=-155)
+            channel_config=ChannelConfig(noise_level_db=-60.0),
+            noise_config=NoiseConfig(rin_db_hz=-155.0)
         )
 
     @staticmethod
@@ -90,7 +90,7 @@ class ScenarioGenerator:
             name="Highway Traffic",
             description="Mixed fast approaching/receding targets + static clutter.",
             targets=targets,
-            channel_config=ChannelConfig(noise_level_db=-55),
+            channel_config=ChannelConfig(noise_level_db=-55.0),
             noise_config=NoiseConfig()
         )
 
@@ -115,7 +115,7 @@ class ScenarioGenerator:
             name="Sea Skimmer",
             description="High-speed target embedded in dense sea clutter.",
             targets=targets,
-            channel_config=ChannelConfig(noise_level_db=-50), # Higher environmental noise
+            channel_config=ChannelConfig(noise_level_db=-50.0), # Higher environmental noise
             noise_config=NoiseConfig()
         )
 
@@ -129,8 +129,8 @@ class ScenarioGenerator:
             name="Stealth Intruder",
             description="Long-range, extremely low RCS target.",
             targets=targets,
-            channel_config=ChannelConfig(noise_level_db=-70), # Quiet night
-            noise_config=NoiseConfig(rin_db_hz=-160) # High performance radar needed
+            channel_config=ChannelConfig(noise_level_db=-70.0), # Quiet night
+            noise_config=NoiseConfig(rin_db_hz=-160.0) # High performance radar needed
         )
 
     @staticmethod
@@ -144,7 +144,7 @@ class ScenarioGenerator:
             name="Electronic Warfare",
             description="Target environment under active noise jamming (+30dB noise).",
             targets=targets,
-            channel_config=ChannelConfig(noise_level_db=-20), # Jamming!
+            channel_config=ChannelConfig(noise_level_db=-20.0), # Jamming!
             noise_config=NoiseConfig()
         )
 

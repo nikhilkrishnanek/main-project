@@ -14,69 +14,95 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+class ResidualBlock(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=1):
+        super(ResidualBlock, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        
+        self.shortcut = nn.Sequential()
+        if stride != 1 or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels)
+            )
+
+    def forward(self, x):
+        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out += self.shortcut(x)
+        return F.relu(out)
+
+class AttentionBlock(nn.Module):
+    """
+    Bahdanau-style Attention for focusing on key temporal events in Doppler series.
+    """
+    def __init__(self, hidden_size):
+        super(AttentionBlock, self).__init__()
+        self.attn = nn.Linear(hidden_size, 1)
+
+    def forward(self, lstm_output):
+        # lstm_output: (batch, seq_len, hidden_size)
+        attn_weights = F.softmax(self.attn(lstm_output), dim=1)
+        # weights: (batch, seq_len, 1)
+        context = torch.sum(attn_weights * lstm_output, dim=1)
+        return context, attn_weights
+
 class SpectralCNN(nn.Module):
-    """
-    CNN Branch for processing 2D Spectrograms.
-    """
     def __init__(self, in_channels=1):
         super(SpectralCNN, self).__init__()
-        self.conv1 = nn.Conv2d(in_channels, 16, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.pool = nn.MaxPool2d(2, 2)
-        self.dropout = nn.Dropout(0.25)
-        # Assuming input 128x128 -> after 2 pools -> 32x32
-        self.fc = nn.Linear(32 * 32 * 32, 256) 
+        self.layer1 = ResidualBlock(in_channels, 16)
+        self.layer2 = ResidualBlock(16, 32, stride=2)
+        self.layer3 = ResidualBlock(32, 64, stride=2)
+        self.pool = nn.AdaptiveAvgPool2d((4, 4))
+        self.fc = nn.Linear(64 * 4 * 4, 256)
 
     def forward(self, x):
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.pool(x)
         x = x.view(x.size(0), -1)
-        x = F.relu(self.fc(x))
-        return x
+        return F.relu(self.fc(x))
 
 class TemporalLSTM(nn.Module):
-    """
-    LSTM Branch for processing 1D Doppler time-series.
-    """
     def __init__(self, input_size=1, hidden_size=64, num_layers=2):
         super(TemporalLSTM, self).__init__()
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, 128)
+        # Use bidirectional for better context
+        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
+        self.attention = AttentionBlock(hidden_size * 2)
+        self.fc = nn.Linear(hidden_size * 2, 128)
 
     def forward(self, x):
-        # x shape: (batch, seq_len) -> (batch, seq_len, 1)
         if x.dim() == 2:
             x = x.unsqueeze(-1)
-        _, (h_n, _) = self.lstm(x)
-        # Use last hidden state
-        out = F.relu(self.fc(h_n[-1]))
-        return out
+        out, _ = self.lstm(x)
+        context, attn_weights = self.attention(out)
+        return F.relu(self.fc(context)), attn_weights
 
 class HybridRadarNet(nn.Module):
-    """
-    Fused CNN-LSTM Architecture for spatiotemporal target classification.
-    """
-    def __init__(self, num_classes=4):
+    def __init__(self, num_classes=5):
         super(HybridRadarNet, self).__init__()
         self.cnn = SpectralCNN()
         self.lstm = TemporalLSTM()
         
-        # Fusion Layer
         self.classifier = nn.Sequential(
             nn.Linear(256 + 128, 128),
+            nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Dropout(0.5),
+            nn.Dropout(0.4),
             nn.Linear(128, num_classes)
         )
 
     def forward(self, spectrogram, time_series):
         cnn_feat = self.cnn(spectrogram)
-        lstm_feat = self.lstm(time_series)
+        lstm_feat, attn_weights = self.lstm(time_series)
         
-        # Concatenate features
         fused = torch.cat((cnn_feat, lstm_feat), dim=1)
         logits = self.classifier(fused)
-        return logits
+        return logits, attn_weights
 
 def get_hybrid_model(num_classes=4):
     return HybridRadarNet(num_classes=num_classes)

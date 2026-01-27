@@ -35,14 +35,32 @@ class PerformanceMonitor:
 
     def get_metrics(self) -> dict:
         """
-        Returns average metrics over the window.
+        Returns average metrics over the window and history for trends.
         """
         metrics = {}
+        history = {}
+        
         for phase, values in self.latencies.items():
-            metrics[f"{phase}_ms"] = round(sum(values) / len(values), 2)
+            avg_lat = round(sum(values) / len(values), 2)
+            metrics[f"{phase}_ms"] = avg_lat
+            history[phase] = list(values)
             
         # Calculate FPS based on total_ms
         if "total_ms" in metrics and metrics["total_ms"] > 0:
             metrics["effective_fps"] = round(1000 / metrics["total_ms"], 1)
             
-        return metrics
+        return {
+            "averages": metrics,
+            "history": history
+        }
+
+    def check_bottlenecks(self, threshold_ms: float = 80.0) -> list[str]:
+        """
+        Identify phases exceeding the real-time budget.
+        """
+        bottlenecks = []
+        metrics = self.get_metrics()["averages"]
+        for phase, lat in metrics.items():
+            if phase != "total_ms" and lat > threshold_ms:
+                bottlenecks.append(f"CRITICAL: {phase} delayed ({lat}ms)")
+        return bottlenecks

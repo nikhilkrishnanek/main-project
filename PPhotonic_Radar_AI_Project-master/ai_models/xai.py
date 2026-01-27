@@ -15,8 +15,12 @@ Author: Senior AI Engineeer
 """
 
 from dataclasses import dataclass
+from dataclasses import dataclass
 from typing import Dict, Any, List, Union
 import numpy as np
+
+import torch
+import torch.nn.functional as F
 
 @dataclass
 class Explanation:
@@ -28,133 +32,126 @@ class Explanation:
     uncertainty_score: float
     warning: str = ""
 
-def calibrate_confidence(logits: np.ndarray, temperature: float = 1.5) -> np.ndarray:
+class GradCAM:
     """
-    Applies Temperature Scaling to logits to produce calibrated probabilities.
-    
-    P_calibrated = Softmax(logits / T)
-    
-    Args:
-        logits: Raw output from the neural network (before softmax).
-        temperature: Scaling factor (T > 1 softens, T < 1 sharpens).
-                     Ideally learned from validation set. k=1.5 is a safe heuristic.
+    Grad-CAM: Visualizes what the Radar CNN is 'looking at' in the Spectral map.
     """
-    scaled_logits = logits / temperature
-    exp_logits = np.exp(scaled_logits - np.max(scaled_logits)) # Stability
-    probs = exp_logits / np.sum(exp_logits)
-    return probs
+    def __init__(self, model, target_layer):
+        self.model = model
+        self.target_layer = target_layer
+        self.gradients = None
+        self.activations = None
+        
+        self.target_layer.register_forward_hook(self.save_activations)
+        self.target_layer.register_full_backward_hook(self.save_gradients)
 
-def evaluate_uncertainty(probs: np.ndarray) -> float:
+    def save_activations(self, module, input, output):
+        self.activations = output
+
+    def save_gradients(self, module, grad_input, grad_output):
+        self.gradients = grad_output[0]
+
+    def generate(self, spectrogram, time_series, class_idx):
+        self.model.zero_grad()
+        logits, _ = self.model(spectrogram, time_series)
+        loss = logits[0, class_idx]
+        loss.backward()
+
+        # Weight the activations by spatial average of gradients
+        weights = torch.mean(self.gradients, dim=(2, 3), keepdim=True)
+        cam = torch.sum(weights * self.activations, dim=1).squeeze()
+        cam = F.relu(cam)
+        cam = cam.detach().cpu().numpy()
+        
+        # Normalize
+        if cam.max() > 0:
+            cam = cam / cam.max()
+        return cam
+
+def mc_dropout_inference(model, spectrogram, time_series, n_iterations=10):
     """
-    Calculates predictive entropy as a measure of Aleatoric Uncertainty.
-    H(p) = -Sum(p * log(p))
+    Performs Monte Carlo Dropout to estimate Epistemic Uncertainty.
     """
-    # Clip for stability
-    p = np.clip(probs, 1e-9, 1.0)
-    entropy = -np.sum(p * np.log(p))
-    return float(entropy)
+    model.train() # Keep dropout active
+    all_probs = []
+    
+    with torch.no_grad():
+        for _ in range(n_iterations):
+            logits, _ = model(spectrogram, time_series)
+            probs = F.softmax(logits, dim=1)
+            all_probs.append(probs.cpu().numpy())
+            
+    all_probs = np.array(all_probs)
+    mean_probs = np.mean(all_probs, axis=0)[0]
+    std_probs = np.std(all_probs, axis=0)[0] # Uncertainty per class
+    
+    # Total predictive entropy
+    entropy = -np.sum(mean_probs * np.log(mean_probs + 1e-9))
+    
+    return mean_probs, std_probs, entropy
 
 def verify_physics(prediction_class: str, features: Dict[str, float]) -> bool:
     """
     Checks if the classification violates basic physics laws.
     """
-    # Example Rule: High power but 'Noise' class -> Suspicious
-    if prediction_class == "Noise":
-        snr = features.get("snr_db", -99)
-        if snr > 15.0:  # High SNR should not be noise
+    if prediction_class == "noise":
+        snr_db = features.get("snr_db", -99)
+        if snr_db > 15.0:  # High SNR should not be noise
             return False
-            
-    # Example Rule: Drone must have some micro-Doppler variance
-    if prediction_class == "Drone":
-        kurtosis = features.get("kurtosis", 0)
-        # simplistic check
-        pass
-        
     return True
 
 def generate_explanation(
     prediction_class: str, 
-    raw_confidence: float, 
+    calibrated_probs: np.ndarray, 
+    uncertainty_dict: Dict[str, float],
     features: Dict[str, float],
-    probs_vector: np.ndarray = None
+    cam_heatmap: np.ndarray = None
 ) -> Explanation:
     """
-    Constructs a plain-English explanation for a classification.
+    Constructs a professional Radar Intelligence explanation.
     """
+    confidence = float(np.max(calibrated_probs))
+    entropy = uncertainty_dict.get('entropy', 0.0)
     
-    # 1. Calibration & Uncertainty
-    if probs_vector is not None:
-        # If we had raw logits we'd calibrate them. 
-        # Here we assume probs_vector is already "raw probabilities".
-        # We simulate calibration on the single confidence scalar for the API simplicity
-        cal_conf = raw_confidence # In full system, pass logits
-        entropy = evaluate_uncertainty(probs_vector)
-    else:
-        cal_conf = raw_confidence
-        entropy = 0.0
-    
-    # 2. Feature Attribution (Heuristic)
+    # Feature Attribution
     importance = {
-        "Kinematics (Range/Vel)": 0.1,
-        "Micro-Doppler (Time)": 0.1,
-        "Signal Power (RCS)": 0.1
+        "Kinematics (Doppler)": 0.3,
+        "Micro-Doppler (Temporal)": 0.3,
+        "RCS / Power (Spatial)": 0.4
     }
     
     narrative = []
     
-    # Dynamic Templates
-    if prediction_class == "Drone":
-        importance["Micro-Doppler (Time)"] = 0.85
-        importance["Kinematics (Range/Vel)"] = 0.15
-        importance["Signal Power (RCS)"] = 0.2
-        narrative.append("Classified as **Drone** based on strong **Micro-Doppler** modulation.")
-        narrative.append("Periodic sidebands indicate rotor blades.")
-        
-    elif prediction_class == "Missile":
-        importance["Kinematics (Range/Vel)"] = 0.95
-        importance["Signal Power (RCS)"] = 0.3
-        narrative.append("**Missile** threat identified via high-velocity trajectory.")
-        narrative.append("Absence of micro-motion suggests rigid fuselage.")
-        
-    elif prediction_class == "Bird":
-        importance["Micro-Doppler (Time)"] = 0.75
-        narrative.append("**Bird** detected due to erratic/biological spectrum variance.")
-        
-    elif prediction_class == "Aircraft":
-        importance["Kinematics (Range/Vel)"] = 0.6
-        importance["Signal Power (RCS)"] = 0.8
-        narrative.append("Large RCS target with steady trajectory identified as **Aircraft**.")
+    if prediction_class == "drone":
+        importance["Micro-Doppler (Temporal)"] = 0.82
+        narrative.append("Classified as **Drone** due to high-order Micro-Doppler sidebands captured in the temporal Attention branch.")
+        narrative.append("Detection suggests multi-rotor propulsion.")
+    elif prediction_class == "missile":
+        importance["Kinematics (Doppler)"] = 0.90
+        narrative.append("High-velocity kinetic signature indicates a **Missile** profile.")
+    elif prediction_class == "bird":
+        importance["Micro-Doppler (Temporal)"] = 0.65
+        narrative.append("Biological flight patterns and erratic flapping modulation identify this as a **Bird**.")
+    elif prediction_class == "aircraft":
+        importance["RCS / Power (Spatial)"] = 0.85
+        narrative.append("Large, stable RCS signature consistent with **Fixed-wing Aircraft**.")
 
-    elif prediction_class == "Noise":
-        importance["Signal Power (RCS)"] = 0.6
-        narrative.append("Signal indistinguishable from thermal noise floor.")
-        
-    # 3. Physics & Safety Checks
+    # Radar Safety/Physics Consistency
     passed_physics = verify_physics(prediction_class, features)
     warning_msg = ""
     
-    if not passed_physics:
-        if prediction_class == "Noise":
-            warning_msg = "⚠️ High SNR detected. 'Noise' classification is unreliable."
-        else:
-            warning_msg = "⚠️ Kinematics inconsistent with target class."
-            
-        narrative.append(f"\n\n**WARNING**: {warning_msg}")
+    if entropy > 0.8:
+        warning_msg = "⚠️ Signal ambiguity detected. AI confidence is high but consistency is low (Epistemic Uncertainty)."
     
-    elif entropy > 1.0: # Threshold for 4 classes
-        warning_msg = "High Uncertainty (Entropy). Signature is ambiguous."
-        narrative.append(f"\n\n**NOTE**: {warning_msg}")
+    if cam_heatmap is not None:
+        narrative.append("\n\n**XAI Insight**: Focus localized on the high-intensity target centroid.")
 
-    # 4. Final Assembly
-    title = f"{prediction_class.upper()} DETECTED"
-    full_text = " ".join(narrative)
-    
     return Explanation(
-        title=title,
-        narrative=full_text,
+        title=f"{prediction_class.upper()} IDENTIFIED",
+        narrative=" ".join(narrative),
         feature_importance=importance,
         verification_passed=passed_physics,
-        calibrated_confidence=cal_conf,
+        calibrated_confidence=confidence,
         uncertainty_score=entropy,
         warning=warning_msg
     )

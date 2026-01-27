@@ -19,25 +19,48 @@ from dataclasses import dataclass
 
 @dataclass
 class TargetState:
+    id: int
     position_m: float
     velocity_m_s: float
     acceleration_m_s2: float = 0.0
+    type: str = "civilian" # drone, aircraft, missile, bird
+    maneuver_type: str = "linear" # linear, sinusoidal, evasive
 
 class KinematicEngine:
     def __init__(self, dt: float):
         self.dt = dt
+        self.time = 0.0
 
     def update_state(self, state: TargetState) -> TargetState:
         """
-        Calculates the next state based on current kinematics.
+        Calculates the next state based on current kinematics and maneuver models.
         """
-        new_pos = state.position_m + (state.velocity_m_s * self.dt) + (0.5 * state.acceleration_m_s2 * (self.dt**2))
-        new_vel = state.velocity_m_s + (state.acceleration_m_s2 * self.dt)
+        self.time += self.dt
+        
+        accel = state.acceleration_m_s2
+        
+        # Maneuver Logic
+        if state.maneuver_type == "sinusoidal":
+            # Oscillatory movement (e.g., drone hovering/bobbing)
+            accel = 2.0 * np.sin(2 * np.pi * 0.5 * self.time)
+        elif state.maneuver_type == "evasive":
+            # High-G turns or sudden acceleration changes
+            if int(self.time) % 5 == 0:
+                accel = np.random.uniform(-10, 10)
+        
+        new_pos = state.position_m + (state.velocity_m_s * self.dt) + (0.5 * accel * (self.dt**2))
+        new_vel = state.velocity_m_s + (accel * self.dt)
+        
+        # Boundary check (simple wrap for range simulation)
+        if new_pos > 5000: new_pos = 100
         
         return TargetState(
+            id=state.id,
             position_m=new_pos,
             velocity_m_s=new_vel,
-            acceleration_m_s2=state.acceleration_m_s2
+            acceleration_m_s2=accel,
+            type=state.type,
+            maneuver_type=state.maneuver_type
         )
 
 def simulate_trajectory(initial_state: TargetState, duration_s: float, dt: float) -> list[TargetState]:

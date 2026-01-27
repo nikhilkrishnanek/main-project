@@ -1,5 +1,5 @@
 import numpy as np
-from signal.transforms import compute_range_doppler_map, compute_spectrogram
+from signal_processing.transforms import compute_range_doppler_map, compute_spectrogram
 
 def extract_range_doppler(signal, n_fft=128):
     """

@@ -34,54 +34,89 @@ def render_metrics(metrics: dict):
     c3.metric("VELOCITY RES", f"{metrics.get('vel_res', 0):.2f} m/s")
     c4.metric("AI CONFIDENCE", f"{metrics.get('ai_conf', 0):.1%}")
 
-def render_ppi(targets: List[Dict]):
+def render_ppi(targets: List[Dict], history_size: int = 5):
     """
-    Renders a Plan Position Indicator (PPI) radar display.
+    Renders a Plan Position Indicator (PPI) radar display with track history.
     """
     st.markdown("### ⏺️ PPI RADAR DISPLAY")
     
-    # Simulating bearing for visualization if not present
-    # In a real system, bearing comes from the antenna position/beamforming
-    theta = [np.random.uniform(0, 360) for _ in targets]
-    r = [t['range_m'] for t in targets]
-    labels = [f"ID {t['id']} [{t.get('class', 'Unknown')}]" for t in targets]
-    
+    if 'ppi_history' not in st.session_state:
+        st.session_state.ppi_history = {} # {id: [(r, theta)]}
+
     fig = go.Figure()
     
-    # Add target blips
-    fig.add_trace(go.Scatterpolar(
-        r=r, theta=theta,
-        mode='markers+text',
-        text=labels,
-        marker=dict(size=12, color='#4dfa4d', symbol='cross'),
-        textposition="top center",
-        name="Tactical Targets"
-    ))
+    for t in targets:
+        tid = t['id']
+        r_now = t['range_m']
+        # In this simulation, bearing is derived from ID to stay consistent
+        theta_now = (tid * 45) % 360 
+        
+        if tid not in st.session_state.ppi_history:
+            st.session_state.ppi_history[tid] = []
+        st.session_state.ppi_history[tid].append((r_now, theta_now))
+        
+        # Keep only recent history
+        if len(st.session_state.ppi_history[tid]) > history_size:
+            st.session_state.ppi_history[tid].pop(0)
+            
+        # Draw history trail
+        hist = st.session_state.ppi_history[tid]
+        if len(hist) > 1:
+            h_r, h_theta = zip(*hist)
+            fig.add_trace(go.Scatterpolar(
+                r=h_r, theta=h_theta,
+                mode='lines',
+                line=dict(color='#2b5c2b', width=1),
+                hoverinfo='skip',
+                showlegend=False
+            ))
+
+        # Current position
+        fig.add_trace(go.Scatterpolar(
+            r=[r_now], theta=[theta_now],
+            mode='markers+text',
+            text=[f"TGT {tid}"],
+            marker=dict(size=14, color='#4dfa4d', symbol='cross', line=dict(color='white', width=1)),
+            textposition="top center",
+            name=f"Target {tid}"
+        ))
     
     fig.update_layout(
         template="plotly_dark",
         polar=dict(
             bgcolor="#050805",
-            radialaxis=dict(visible=True, range=[0, 1000], color="#1a331a"),
-            angularaxis=dict(color="#1a331a")
+            radialaxis=dict(visible=True, range=[0, 3000], color="#1a331a", gridcolor="#1a331a"),
+            angularaxis=dict(color="#1a331a", gridcolor="#1a331a")
         ),
         showlegend=False,
         margin=dict(l=20, r=20, t=20, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        height=450
     )
     st.plotly_chart(fig, use_container_width=True)
 
-def render_doppler_waterfall(rd_map: np.ndarray):
+def render_doppler_waterfall(rd_map: np.ndarray, max_history: int = 50):
     """
-    Renders a Doppler Waterfall (Time-Frequency Evolution).
-    For simulation, we use the current RD-Map as a frame.
+    Renders a scrolling Doppler Waterfall (Time vs Doppler Velocity).
+    Shows the Peak Intensity slice across Doppler bins over time.
     """
-    st.markdown("### 🌊 DOPPLER WATERFALL")
+    st.markdown("### 🌊 DOPPLER WATERFALL HISTORY")
+    
+    if 'waterfall_buffer' not in st.session_state:
+        st.session_state.waterfall_buffer = np.zeros((max_history, rd_map.shape[0]))
+
+    # Extract Doppler slice (Max intensity across ranges for each doppler bin)
+    doppler_slice = np.max(rd_map, axis=1)
+    
+    # Update buffer (Scroll up)
+    st.session_state.waterfall_buffer = np.roll(st.session_state.waterfall_buffer, -1, axis=0)
+    st.session_state.waterfall_buffer[-1, :] = doppler_slice
+    
     fig = px.imshow(
-        rd_map,
+        st.session_state.waterfall_buffer,
         color_continuous_scale="Viridis",
-        labels=dict(x="Range Bin", y="Doppler Bin"),
+        labels=dict(x="Doppler Bin (Velocity)", y="Time (Frames)"),
         aspect="auto"
     )
     fig.update_layout(
@@ -90,8 +125,50 @@ def render_doppler_waterfall(rd_map: np.ndarray):
         coloraxis_showscale=False,
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        height=450
     )
     st.plotly_chart(fig, use_container_width=True)
+
+def render_target_table(targets: List[Dict]):
+    """Renders a tactical targets table with threat sorting."""
+    st.markdown("### 📋 ACTIVE TARGET INVENTORY")
+    
+    if not targets:
+        st.info("Searching for tactical signatures...")
+        return
+
+    import pandas as pd
+    
+    formatted_data = []
+    for t in targets:
+        # Threat assessment logic
+        threat_score = 0
+        if t['range_m'] < 500: threat_score += 50 # Proximity
+        if abs(t['velocity_m_s']) > 100: threat_score += 30 # High speed
+        if t.get('class') == 'Missile': threat_score += 20 # Weaponry
+        
+        status = "CRITICAL" if threat_score >= 80 else "ELEVATED" if threat_score >= 40 else "NOMINAL"
+        
+        formatted_data.append({
+            "ID": f"INV-{t['id']:03d}",
+            "RANGE (m)": f"{t['range_m']:.1f}",
+            "VELOCITY (m/s)": f"{t['velocity_m_s']:.1f}",
+            "CLASSIFICATION": t.get('class', 'Unknown').upper(),
+            "STATUS": status,
+            "THREAT": threat_score
+        })
+        
+    df = pd.DataFrame(formatted_data).sort_values("THREAT", ascending=False)
+    
+    def color_status(val):
+        color = '#ff3333' if val == "CRITICAL" else '#ffcc00' if val == "ELEVATED" else '#4dfa4d'
+        return f'color: {color}; font-weight: bold'
+
+    st.dataframe(
+        df.style.map(color_status, subset=['STATUS']),
+        use_container_width=True,
+        hide_index=True
+    )
 
 def render_threat_panel(detections: List[Dict]):
     """
@@ -126,7 +203,7 @@ def render_sidebar() -> tuple:
     # Default values
     p_defaults = {'fc': 10.0, 'bw': 4.0, 'dur': 10.0, 'lw': 100}
     c_defaults = {'noise': -50.0}
-    n_defaults = {'rin': -155}
+    n_defaults = {'rin': -155.0}
     
     if selected_scenario != "Custom":
         s = ScenarioGenerator.load(selected_scenario)
@@ -170,11 +247,11 @@ def render_sidebar() -> tuple:
     # --- 2. Channel ---
     with st.sidebar.expander("🌍 Environmental Factors", expanded=True):
         noise = st.sidebar.slider(
-            "Thermal Noise (dB)", -100.0, -10.0, c_defaults['noise'],
+            "Thermal Noise (dB)", -100.0, -10.0, float(c_defaults['noise']), step=1.0,
             help="Background electronic noise floor. Affects detection sensitivity."
         )
         rin = st.sidebar.slider(
-            "Laser RIN (dB/Hz)", -170, -120, n_defaults['rin'],
+            "Laser RIN (dB/Hz)", -170.0, -120.0, float(n_defaults['rin']), step=1.0,
             help="Relative Intensity Noise. Fundamental noise limit of the optical carrier."
         )
         c_cfg = ChannelConfig(carrier_freq=fc, noise_level_db=noise)

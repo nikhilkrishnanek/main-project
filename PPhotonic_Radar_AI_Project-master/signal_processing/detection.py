@@ -36,35 +36,50 @@ def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-
     """
     Standard Cell-Averaging CFAR (CA-CFAR) for 2D Range-Doppler maps.
     
-    Mathematical Justification:
-    The threshold is set as T = alpha * P_noise, where P_noise is the average 
-    power in the training cells. alpha is calculated to maintain a constant 
-    probability of false alarm (Pfa).
+    BLOCK-LEVEL LOGIC:
+    1. Window Definition: A 2D sliding window is moved across the RD map.
+       - CUT (Cell Under Test): The current pixel being evaluated.
+       - Guard Cells: A small buffer around the CUT to prevent target energy leakage.
+       - Training Cells: The outer ring used to estimate local background noise statistics.
+       
+    2. Noise Estimation: Assume the background noise follows a Rayleigh distribution 
+       (exponential in power). We calculate the mean power (P_noise) of all training cells.
+       
+    3. Threshold Calculation (Alpha Selection):
+       To maintain a Constant Probability of False Alarm (Pfa), the threshold 'T' is:
+       T = alpha * P_noise
+       where alpha = N * (Pfa^(-1/N) - 1), and N is the number of training cells.
+       
+    4. Decision: If CUT_power > T, target detected.
     """
     from scipy.signal import fftconvolve
 
-    M, N = rd_map.shape
-    full_h = 2 * train + 2 * guard + 1
-    full_w = 2 * train + 2 * guard + 1
-    inner_h = 2 * guard + 1
-    inner_w = 2 * guard + 1
+    M, N_cols = rd_map.shape
+    
+    # Square window dimensions
+    full_side = 2 * train + 2 * guard + 1
+    inner_side = 2 * guard + 1
 
     # Kernel for full window and inner (guard+CUT) window
-    k_full = np.ones((full_h, full_w), dtype=float)
-    k_inner = np.ones((inner_h, inner_w), dtype=float)
+    # Convolution allows for extremely fast simultaneous summation across the entire map.
+    k_full = np.ones((full_side, full_side), dtype=float)
+    k_inner = np.ones((inner_side, inner_side), dtype=float)
 
     # Convolve to get sum over windows
     sum_full = fftconvolve(rd_map, k_full, mode="same")
     sum_inner = fftconvolve(rd_map, k_inner, mode="same")
 
-    num_train = full_h * full_w - inner_h * inner_w
+    num_train = (full_side**2) - (inner_side**2)
     num_train = max(1, num_train)
     
-    # Calculate Alpha for N training cells: alpha = N * (Pfa^(-1/N) - 1)
+    # ALPHA CALCULATION
+    # Strictly follows the formula for square-law detectors to ensure statistical Pfa control.
     alpha = num_train * (pfa ** (-1.0 / num_train) - 1.0)
 
-    # Training sum = sum_full - sum_inner (this isolates the training ring)
+    # Training sum = total window sum - guard/CUT sum
     train_sum = sum_full - sum_inner
+    
+    # Mean noise power estimation
     noise_level = train_sum / num_train
     noise_level[noise_level <= 0] = 1e-12
 
@@ -90,7 +105,7 @@ def go_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-
     return det_map, alpha
 
 
-from signal.transforms import compute_range_doppler_map
+from signal_processing.transforms import compute_range_doppler_map
 
 def detect_targets_from_raw(signal: np.ndarray, fs: float = 4096, n_range: int = 128, n_doppler: int = 128,
                             method: str = "ca", **kwargs) -> Dict:

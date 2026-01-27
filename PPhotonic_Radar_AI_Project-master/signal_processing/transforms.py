@@ -60,6 +60,13 @@ def get_adaptive_window(n_samples: int, method: str = 'hann', **kwargs) -> np.nd
         # Fallback to scipy get_window for standard types
         return get_window(method, n_samples)
 
+def apply_window(signal: np.ndarray, method: str = 'hann') -> np.ndarray:
+    """
+    Applies a window function to the provided signal.
+    """
+    win = get_adaptive_window(len(signal), method=method)
+    return signal * win
+
 def compute_range_doppler_map(
     if_signal: np.ndarray, 
     n_chirps: int, 

@@ -2,118 +2,168 @@
 Multi-Target Track Manager
 ==========================
 
-Handles the lifecycle of multiple radar tracks.
-Features:
-- Global Nearest Neighbor (GNN) data association.
-- Persistent ID assignment.
-- Track coasting (maintenance through missed detections).
-- Automated track deletion (management of stale targets).
+Handles the lifecycle of multiple radar tracks using a multi-state machine
+and Mahalanobis-based Global Nearest Neighbor (GNN) association.
 
-Author: Radar Tracking Expert
+Track States:
+- PROVISIONAL: Initial detection, needs N consecutive hits to confirm.
+- CONFIRMED: High-confidence track.
+- COASTING: Target lost, predicting state based on motion model (Re-acquisition).
+
+Author: Principal Radar Tracking Scientist
 """
 
 import numpy as np
+from enum import Enum
 from typing import List, Dict, Optional, Tuple
 from tracking.kalman import KalmanFilter
 
+class TrackState(Enum):
+    PROVISIONAL = 1
+    CONFIRMED = 2
+    COASTING = 3
+    DELETED = 4
+
 class RadarTrack:
-    def __init__(self, track_id: int, initial_state: np.ndarray, dt: float):
+    def __init__(self, track_id: int, initial_meas: np.ndarray, dt: float):
         self.track_id = track_id
         self.kf = KalmanFilter(dt=dt)
-        self.kf.x = initial_state # [range, velocity]
+        # Initialize state: [range, velocity, 0]
+        self.kf.x = np.array([initial_meas[0], initial_meas[1], 0.0])
         
+        self.state = TrackState.PROVISIONAL
         self.age = 1
         self.hits = 1
-        self.misses = 0
-        self.active = True
+        self.misses_total = 0
+        self.consecutive_misses = 0
+        self.consecutive_hits = 1
         
     def predict(self):
         self.age += 1
         return self.kf.predict()
         
     def update(self, z: np.ndarray):
+        """Successful association update."""
         self.hits += 1
-        self.misses = 0
+        self.consecutive_hits += 1
+        self.consecutive_misses = 0
+        
+        # State Transition: Provisional -> Confirmed
+        if self.state == TrackState.PROVISIONAL and self.consecutive_hits >= 3:
+            self.state = TrackState.CONFIRMED
+        
+        # State Transition: Coasting -> Confirmed
+        if self.state == TrackState.COASTING:
+            self.state = TrackState.CONFIRMED
+
         return self.kf.update(z)
         
     def mark_miss(self):
-        self.misses += 1
-        if self.misses > 5: # Threshold for deletion
-            self.active = False
+        """Handle missed detection (Coasting)."""
+        self.consecutive_misses += 1
+        self.misses_total += 1
+        self.consecutive_hits = 0
+        
+        if self.state == TrackState.CONFIRMED:
+            self.state = TrackState.COASTING
+            
+        # Deletion logic
+        if self.state == TrackState.PROVISIONAL and self.consecutive_misses >= 2:
+            self.state = TrackState.DELETED
+        elif self.state == TrackState.COASTING and self.consecutive_misses >= 10:
+            self.state = TrackState.DELETED
+
+    @property
+    def active(self) -> bool:
+        return self.state != TrackState.DELETED
 
 class TrackManager:
-    def __init__(self, dt: float, association_threshold: float = 10.0):
+    def __init__(self, dt: float, association_gate: float = 3.5):
+        """
+        Args:
+            dt: Sampling time.
+            association_gate: Mahalanobis distance threshold (Standard deviations).
+                              3.5 corresponds to ~99% confidence for 2D.
+        """
         self.dt = dt
         self.tracks: List[RadarTrack] = []
         self.next_id = 1
-        self.association_threshold = association_threshold # Euclidean distance in RD space
+        self.association_gate = association_gate 
 
     def update(self, detections: List[Tuple[float, float]]) -> List[Dict]:
         """
-        Updates trackers with a list of detections [(range, velocity), ...].
-        Returns list of active track summaries.
+        Orchestrates the tracking cycle: Predict -> Associate -> Update -> Manage.
         """
-        # 1. Prediction step for all trackers
+        # 1. Prediction for all existing tracks
         for track in self.tracks:
             track.predict()
             
-        # 2. Data Association (Nearest Neighbor)
+        # 2. Data Association (GNN using Mahalanobis Distance)
         unassigned_detections = list(range(len(detections)))
         unassigned_tracks = list(range(len(self.tracks)))
-        
         assignments = []
         
         if self.tracks and detections:
-            # Build cost matrix (Euclidean distance)
-            # Row: tracks, Col: detections
+            # Build cost matrix (Mahalanobis Distance)
             costs = np.zeros((len(self.tracks), len(detections)))
             for i, track in enumerate(self.tracks):
                 for j, det in enumerate(detections):
-                    dist = np.linalg.norm(track.kf.x - np.array(det))
-                    costs[i, j] = dist
+                    costs[i, j] = track.kf.mahalanobis_distance(np.array(det))
             
-            # Simplified GNN: Find minimums
+            # GNN optimal assignment (Greedy approach for real-time performance)
             while unassigned_tracks and unassigned_detections:
-                # Find the overall minimum distance
-                i, j = np.unravel_index(np.argmin(costs, axis=None), costs.shape)
-                min_dist = costs[i, j]
+                i_min, j_min = np.unravel_index(np.argmin(costs, axis=None), costs.shape)
+                min_cost = costs[i_min, j_min]
                 
-                if min_dist < self.association_threshold:
-                    assignments.append((i, j))
-                    # Prevent re-assignment
-                    costs[i, :] = np.inf
-                    costs[:, j] = np.inf
-                    unassigned_tracks.remove(i)
-                    unassigned_detections.remove(j)
+                if min_cost < self.association_gate:
+                    assignments.append((i_min, j_min))
+                    costs[i_min, :] = np.inf
+                    costs[:, j_min] = np.inf
+                    unassigned_tracks.remove(i_min)
+                    unassigned_detections.remove(j_min)
                 else:
-                    break # No more close matches
+                    break # Gate exceeded
                     
         # 3. Update assigned tracks
         for track_idx, det_idx in assignments:
             self.tracks[track_idx].update(np.array(detections[det_idx]))
             
-        # 4. Handle unassigned tracks (Missed detections)
+        # 4. Handle missed detections (Coasting/Deletion)
         for track_idx in unassigned_tracks:
             self.tracks[track_idx].mark_miss()
             
-        # 5. Handle unassigned detections (New tracks)
+        # 5. Handle new detections (Provisional initiation)
         for det_idx in unassigned_detections:
             new_track = RadarTrack(self.next_id, np.array(detections[det_idx]), self.dt)
             self.tracks.append(new_track)
             self.next_id += 1
             
-        # 6. Cleanup inactive tracks
+        # 6. Cleanup
         self.tracks = [t for t in self.tracks if t.active]
         
-        # 7. Prepare output
+        # 7. Format Output Summary
         return [
             {
                 "id": t.track_id,
-                "range_m": t.kf.x[0],
-                "velocity_m_s": t.kf.x[1],
-                "covariance": t.kf.P.tolist(),
-                "age": t.age,
-                "confidence": max(0.2, 1.0 - (t.misses * 0.2)) # Heuristic
+                "state": t.state.name,
+                "range_m": float(t.kf.x[0]),
+                "velocity_m_s": float(t.kf.x[1]),
+                "acceleration_m_s2": float(t.kf.x[2]),
+                "confidence": self._calculate_confidence(t),
+                "age": t.age
             }
-            for t in self.tracks
+            for t in self.tracks if t.state != TrackState.PROVISIONAL or t.hits > 1
         ]
+
+    def _calculate_confidence(self, track: RadarTrack) -> float:
+        """Heuristic confidence based on hits and state."""
+        if track.state == TrackState.CONFIRMED:
+            base = 0.9
+        elif track.state == TrackState.COASTING:
+            base = 0.5 - (track.consecutive_misses * 0.05)
+        else:
+            base = 0.3
+            
+        # Boost based on longevity
+        boost = min(0.1, track.hits * 0.01)
+        return float(np.clip(base + boost, 0.1, 0.99))

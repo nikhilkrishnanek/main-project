@@ -35,6 +35,9 @@ from typing import Optional, Dict, Tuple
 import numpy as np
 
 from core.config import get_config
+from photonic_models.comb import generate_flat_comb
+from photonic_models.transmission import simulate_wdm_channel
+from photonic_models.beamforming import calculate_squint_error
 
 
 def _get_model_cfg() -> Dict:
@@ -207,6 +210,54 @@ def example_usage():
     t, s = generate_photonic_rf(duration=0.01, fs=20000, num_channels=4, seed=1234)
     print("Generated", s.shape, "samples")
 
+
+def generate_photonic_research_signal(
+    duration: float,
+    fs: float = 1e10, 
+    num_lines: int = 8,
+    spacing_ghz: float = 25.0,
+    seed: Optional[int] = None
+) -> Dict:
+    """
+    Advanced Research-Grade Signal Generation.
+    Models an Optical Frequency Comb (OFC) based multi-band radar source.
+    """
+    rng = np.random.default_rng(seed)
+    
+    # 1. OFC Generation (Multi-wavelength Source)
+    t, e_comb = generate_flat_comb(
+        n_lines=num_lines,
+        spacing_hz=spacing_ghz * 1e9,
+        center_freq_hz=193.1e12,
+        fs=fs,
+        duration=duration
+    )
+    
+    # 2. WDM/MDM Multi-band Abstraction
+    bands = []
+    for n in range(num_lines):
+        band_sig = e_comb * np.exp(1j * rng.uniform(0, 2*np.pi))
+        bands.append(band_sig)
+        
+    wdm_output = simulate_wdm_channel(bands, spacing_ghz * 1e9, fiber_length_km=10.0)
+    
+    # 3. Phased Array vs TTD (Photonic Advantage)
+    f_center = 10e9
+    f_edge = 14e9 
+    squint_electronic = calculate_squint_error(theta_boresight=10.0, f_center=f_center, f_edge=f_edge)
+    
+    return {
+        "time": t,
+        "optical_envelope": e_comb,
+        "wdm_bands": wdm_output,
+        "metrics": {
+            "num_coherent_lines": num_lines,
+            "line_spacing_ghz": spacing_ghz,
+            "electronic_squint_deg": squint_electronic,
+            "photonic_squint_deg": 0.0, 
+            "bandwidth_potential_thz": float(num_lines * spacing_ghz / 1000)
+        }
+    }
 
 if __name__ == "__main__":
     example_usage()

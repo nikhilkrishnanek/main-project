@@ -13,23 +13,30 @@ Author: Radar Signal Processing Expert
 import numpy as np
 from typing import List, Optional
 
+def coherent_integration(pulses: np.ndarray) -> np.ndarray:
+    """
+    Performs coherent integration (complex summation) across pulses.
+    Maximum theoretical processing gain: 10 * log10(N) dB.
+    
+    pulses: shape (num_pulses, samples_per_pulse)
+    """
+    # Sum along the pulse (slow-time) dimension
+    return np.mean(pulses, axis=0)
+
 def incoherent_integration(frames: List[np.ndarray]) -> np.ndarray:
     """
     Performs incoherent integration (averaging magnitude) across multiple frames.
     Improves SNR by approx sqrt(N) where N is the number of frames.
     
-    Frames should be logarithmic (dB) maps for robust averaging, or linear power.
-    This implementation assumes Log-magnitude (dB) maps.
+    Frames should be linear power maps.
     """
     if not frames:
         return np.array([])
     
-    # Average in linear power domain for accuracy
-    linear_frames = [10**(f / 10) for f in frames]
-    avg_linear = np.mean(linear_frames, axis=0)
+    # Average in linear power domain
+    avg_linear = np.mean(frames, axis=0)
     
-    # Convert back to Log (dB)
-    return 10 * np.log10(avg_linear + 1e-12)
+    return avg_linear
 
 def mti_filter(current_frame: np.ndarray, previous_frame: np.ndarray) -> np.ndarray:
     """

@@ -24,29 +24,35 @@ def add_awgn(signal: np.ndarray, snr_db: float) -> np.ndarray:
     noise = np.sqrt(noise_power/2) * (np.random.randn(*signal.shape) + 1j * np.random.randn(*signal.shape))
     return signal + noise
 
-def generate_clutter(n_samples: int, distribution: str = 'weibull', **kwargs) -> np.ndarray:
+def generate_clutter(n_samples: int, distribution: str = 'weibull', scenario: str = 'custom', **kwargs) -> np.ndarray:
     """
-    Generates non-Gaussian radar clutter.
+    Generates non-Gaussian radar clutter based on tactical scenarios.
     
-    Distributions:
-    - 'weibull': Common for sea/land clutter at low grazing angles.
-    - 'k': Common for high-resolution sea clutter.
-    - 'gaussian': Simple Rayleigh clutter.
+    Profiles:
+    - 'urban': High K-factor, dense multipath (K-distribution).
+    - 'sea': Weibull with low shape factor (heavy tails).
+    - 'desert': Low power Gaussian/Rayleigh.
     """
+    if scenario == 'urban':
+        # Dense clutter with high texture
+        return generate_clutter(n_samples, distribution='k', shape=1.2, scale=2.0)
+    elif scenario == 'sea':
+        # Heavy-tailed Weibull for sea spikes
+        return generate_clutter(n_samples, distribution='weibull', shape=0.8, scale=1.5)
+    elif scenario == 'desert':
+        return generate_clutter(n_samples, distribution='gaussian')
+        
     if distribution == 'weibull':
         scale = kwargs.get('scale', 1.0)
         shape = kwargs.get('shape', 1.5)
-        # Weibull magnitude, random phase
         mag = scale * np.random.weibull(shape, n_samples)
     elif distribution == 'k':
-        # K-distribution is a Product Model (Gamma * Rayleigh)
         shape = kwargs.get('shape', 2.0)
         scale = kwargs.get('scale', 1.0)
         texture = np.random.gamma(shape, scale, n_samples)
         speckle = np.sqrt(0.5) * (np.random.randn(n_samples) + 1j * np.random.randn(n_samples))
         return np.sqrt(texture) * speckle
     else:
-        # Rayleigh / Gaussian Clutter
         return np.sqrt(0.5) * (np.random.randn(n_samples) + 1j * np.random.randn(n_samples))
     
     phase = np.random.uniform(0, 2*np.pi, n_samples)

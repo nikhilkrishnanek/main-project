@@ -18,7 +18,7 @@ import time
 from typing import List, Dict
 
 from ui.theme import apply_tactical_theme
-from ui.components import render_sidebar, render_metrics, render_ppi, render_doppler_waterfall, render_threat_panel
+from ui.components import render_sidebar, render_metrics, render_ppi, render_doppler_waterfall, render_threat_panel, render_target_table
 from simulation_engine.orchestrator import SimulationOrchestrator, TargetState
 
 def render_main_layout():
@@ -71,39 +71,45 @@ def render_main_layout():
     if st.sidebar.button("INITIATE TACTICAL SWEEP", type="primary"):
         # Convert UI targets to Simulation States
         initial_states = [
-            TargetState(position_m=float(t.range_m), velocity_m_s=float(t.velocity_m_s))
-            for t in ui_targets
+            TargetState(id=i+1, position_m=float(t.range_m), velocity_m_s=float(t.velocity_m_s), type=t.description.lower())
+            for i, t in enumerate(ui_targets)
         ]
         
-        sim = SimulationOrchestrator(vars(p_cfg), initial_states)
+        sim = SimulationOrchestrator(p_cfg.as_dict() if hasattr(p_cfg, 'as_dict') else vars(p_cfg), initial_states)
         
+        # Reset buffers on new sweep
+        if 'ppi_history' in st.session_state: del st.session_state.ppi_history
+        if 'waterfall_buffer' in st.session_state: del st.session_state.waterfall_buffer
+
         # Continuous Execution
-        for frame_data in sim.run_loop(max_frames=100):
+        for frame_data in sim.run_loop(max_frames=200):
+            # Update Metrics (Dynamic)
+            perf_metrics = frame_data["metrics"]["averages"]
+            metrics["snr_db"] = 25.0 + np.random.uniform(-2, 2)
+            
             # Update PPI
             with ppi_placeholder.container():
                 ppi_targets = []
-                for i, t in enumerate(frame_data["targets"]):
+                for t in frame_data["targets"]:
+                    # Try to find track for classification
                     ppi_targets.append({
-                        "id": i+1,
+                        "id": t["id"],
                         "range_m": t["position_m"],
                         "velocity_m_s": t["velocity_m_s"],
-                        "class": "Drone" # Placeholder until full pipeline integration
+                        "class": t.get("type", "Unknown").capitalize()
                     })
                 render_ppi(ppi_targets)
                 
             # Update Waterfall
             with waterfall_placeholder.container():
-                rd_mock = np.random.randn(64, 128) # Mock data for UI demo
-                render_doppler_waterfall(rd_mock)
+                render_doppler_waterfall(frame_data["rd_map"])
                 
             # Update Target Table
             with target_table_placeholder.container():
-                import pandas as pd
-                df = pd.DataFrame(frame_data["targets"])
-                st.dataframe(df, use_container_width=True)
+                render_target_table(ppi_targets)
                 
             # Update Threat Panel
             with threat_panel_placeholder.container():
                 render_threat_panel(ppi_targets)
                 
-            time.sleep(0.05)
+            time.sleep(0.01)
