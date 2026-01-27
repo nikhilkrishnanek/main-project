@@ -32,16 +32,18 @@ This project simulates a high-frequency Photonic Radar system (FMCW/Heterodyne) 
 
 ## 🏗️ Architecture
 
-The project follows a clean, modular Layered Architecture:
+The project follows a modular 6-layer architecture designed for research scalability and defense readiness:
 
 | Layer | Directory | Description |
 |-------|-----------|-------------|
-| **Simulation** | `src/simulation/` | Photonic core, target responses, noise models, and scenarios. |
-| **DSP** | `src/dsp/` | Signal transforms (2D-FFT, STFT), performance metrics, and evaluation tools. |
-| **AI** | `src/ai/` | PyTorch models, Inference pipeline, and XAI modules. |
-| **Analytics** | `src/analytics/` | Comparative analysis, benchmarking engine, and failure analysis. |
-| **UI** | `src/ui/` | "Design-system" driven UI components and layout logic. |
-| **Interfaces** | `src/interfaces/` | Future-proof hooks for SDR, FPGA, and real-world data integration. |
+| **Core** | `core/` | System engine, telemetry, configuration, and security. |
+| **Photonic** | `photonic/` | Physics-based modeling of signals, noise, and environmental factors. |
+| **Signal** | `signal/` | Digital signal transformations, detection (CFAR), and feature extraction. |
+| **AI** | `ai/` | Cognitive analysis, dual-stream neural networks, and XAI. |
+| **Evaluation** | `evaluation/` | Research benchmarking, metric calculation, and performance tracking. |
+| **UI** | `ui/` | Dashboard components, layout logic, and tactical visualization. |
+
+For a detailed technical breakdown, see [ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## 🚀 Getting Started
 

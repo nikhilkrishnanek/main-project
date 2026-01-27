@@ -2,8 +2,8 @@ import streamlit as st
 import plotly.graph_objects as go
 import numpy as np
 
-from src.ui.components import render_sidebar, render_metrics
-from src.pipeline import RadarPipeline, RadarFrame
+from ui.components import render_sidebar, render_metrics
+from core.engine import RadarPipeline, RadarFrame
 
 # --- Page Configuration ---
 st.set_page_config(
@@ -77,7 +77,7 @@ def render_plots(frame: RadarFrame):
             pred = frame.prediction
             
             # XAI Integration
-            from src.ai.xai import generate_explanation
+            from ai.xai import generate_explanation
             explanation = generate_explanation(pred.predicted_class, pred.confidence, frame.metrics)
             
             # Dynamic Style
@@ -171,7 +171,7 @@ def render_plots(frame: RadarFrame):
         st.markdown('<div class="section-header">📊 Quantitative Research Benchmarks</div>', unsafe_allow_html=True)
         st.info("Performance characterization of the Photonic-Radar system across varying SNR and operational constraints.")
         
-        from src.analytics.benchmarking import get_pd_curve, get_pfa_curve, get_ai_accuracy_benchmark, get_latency_benchmark
+        from evaluation.benchmarking import get_pd_curve, get_pfa_curve, get_ai_accuracy_benchmark, get_latency_benchmark
         
         c1, c2 = st.columns(2)
         
