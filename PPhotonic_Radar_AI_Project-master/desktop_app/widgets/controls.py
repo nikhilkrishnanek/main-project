@@ -19,7 +19,7 @@ class ControlPanel(QWidget):
         # Must match keys in ScenarioGenerator.list_scenarios()
         self.combo_scenarios.addItems([
             "Drone Swarm", 
-            "Highway Traffic", 
+            "Ground Combat", 
             "Sea Skimmer", 
             "Stealth Intruder", 
             "Electronic Warfare"

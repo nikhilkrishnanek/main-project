@@ -78,17 +78,17 @@ class ScenarioGenerator:
         )
 
     @staticmethod
-    def get_highway_traffic() -> Scenario:
-        """Scenario 2: High dynamic range in velocity."""
+    def get_ground_combat() -> Scenario:
+        """Scenario 2: Ground Combat Support."""
         targets = [
-            Target(500.0, 30.0, 10.0, "Fast Car (+30m/s)"),
-            Target(450.0, -25.0, 15.0, "Truck (-25m/s)"),
-            Target(200.0, 1.5, -5.0, "Pedestrian"),
-            Target(300.0, 0.0, 20.0, "Bridge (Static)"),
+            Target(500.0, 30.0, 10.0, "Light Tactical Vehicle (LTV)"),
+            Target(450.0, -25.0, 15.0, "Armored Personnel Carrier"),
+            Target(200.0, 1.5, -5.0, "Infantry Squad"),
+            Target(300.0, 0.0, 20.0, "Forward Operating Base"),
         ]
         return Scenario(
-            name="Highway Traffic",
-            description="Mixed fast approaching/receding targets + static clutter.",
+            name="Ground Combat",
+            description="Mixed tactical vehicle deployment with infantry.",
             targets=targets,
             channel_config=ChannelConfig(noise_level_db=-55.0),
             noise_config=NoiseConfig()
@@ -153,7 +153,7 @@ class ScenarioGenerator:
         """Returns map of Scenario Name -> Description."""
         return {
             "Drone Swarm": "Close proximity micro-UAVs",
-            "Highway Traffic": "High-Doppler traffic monitoring",
+            "Ground Combat": "Tactical ground vehicle tracking",
             "Sea Skimmer": "Mach 0.8 missile in sea clutter",
             "Stealth Intruder": "Low-RCS detection limit test",
             "Electronic Warfare": "High-noise jamming environment"
@@ -164,7 +164,7 @@ class ScenarioGenerator:
         """Factory method to load by name."""
         map_ = {
             "Drone Swarm": cls.get_drone_swarm,
-            "Highway Traffic": cls.get_highway_traffic,
+            "Ground Combat": cls.get_ground_combat,
             "Sea Skimmer": cls.get_sea_skimmer,
             "Stealth Intruder": cls.get_stealth_intruder,
             "Electronic Warfare": cls.get_electronic_warfare
