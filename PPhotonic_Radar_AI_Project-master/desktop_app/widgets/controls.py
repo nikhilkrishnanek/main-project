@@ -16,7 +16,14 @@ class ControlPanel(QWidget):
         group_scenario = QGroupBox("Scenario Control")
         form_layout = QFormLayout()
         self.combo_scenarios = QComboBox()
-        self.combo_scenarios.addItems(["Drone Swarm", "Crossing Targets", "High Speed Missile"])
+        # Must match keys in ScenarioGenerator.list_scenarios()
+        self.combo_scenarios.addItems([
+            "Drone Swarm", 
+            "Highway Traffic", 
+            "Sea Skimmer", 
+            "Stealth Intruder", 
+            "Electronic Warfare"
+        ])
         self.combo_scenarios.currentTextChanged.connect(self._on_scenario_change)
         form_layout.addRow("Load Scenario:", self.combo_scenarios)
         group_scenario.setLayout(form_layout)
