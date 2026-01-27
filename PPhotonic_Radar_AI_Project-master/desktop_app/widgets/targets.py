@@ -1,5 +1,5 @@
 
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QWidget, QVBoxLayout, QLabel, QPushButton
+from PySide6.QtWidgets import QTableWidget, QTableWidgetItem, QHeaderView, QWidget, QVBoxLayout, QLabel, QPushButton, QMessageBox
 from PySide6.QtGui import QColor, QFont
 
 class TargetTable(QWidget):
@@ -112,15 +112,23 @@ class TargetTable(QWidget):
 
     def _export_data(self):
         if not self.current_tracks:
+            print("No tracks to export.")
             return
             
         import csv
         import datetime
-        from PySide6.QtWidgets import QFileDialog
+        import os
+        from PySide6.QtWidgets import QFileDialog, QMessageBox
         
         # Generate filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename, _ = QFileDialog.getSaveFileName(self, "Save Target Report", f"targets_{timestamp}.csv", "CSV Files (*.csv)")
+        default_name = f"targets_{timestamp}.csv"
+        
+        # Try Dialog
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Target Report", default_name, "CSV Files (*.csv)")
+        
+        # Fallback if user cancelled or dialog failed effectively? 
+        # Actually user cancelling means they don't want to save.
         
         if filename:
             try:
@@ -130,13 +138,20 @@ class TargetTable(QWidget):
                     writer.writerow(["Track ID", "Classification", "Range (m)", "Velocity (m/s)", "Confidence"])
                     # Rows
                     for tr in self.current_tracks:
+                        cls = tr.get('label', tr.get('description', 'Unknown'))
+                        if cls == "Unknown": cls = tr.get('class_label', 'Unknown')
+                        
                         writer.writerow([
                             tr['id'],
-                            tr.get('class_label', 'Unknown'),
+                            cls,
                             f"{tr['range_m']:.2f}",
                             f"{tr['velocity_m_s']:.2f}",
                             f"{tr.get('confidence', 0.0):.2f}"
                         ])
+                
+                # Feedback
+                QMessageBox.information(self, "Export Success", f"Data saved to:\n{filename}")
                 print(f"Exported to {filename}")
             except Exception as e:
                 print(f"Export failed: {e}")
+                QMessageBox.critical(self, "Export Error", f"Failed to save file:\n{str(e)}")

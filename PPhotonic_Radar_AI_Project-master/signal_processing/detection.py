@@ -32,7 +32,7 @@ def range_doppler_map(pulses: np.ndarray, n_range: int = 128, n_doppler: int = 1
     return np.abs(rd)
 
 
-def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-6) -> Tuple[np.ndarray, float]:
+def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-4) -> Tuple[np.ndarray, float]:
     """
     Standard Cell-Averaging CFAR (CA-CFAR) for 2D Range-Doppler maps.
     Optimized for Square-Law detectors (Power).

@@ -220,6 +220,14 @@ class SimulationOrchestrator:
             
         tracks = self.tracker.update(obs_states)
         
+        # DEBUG: tracing the data flow
+        if self.frame_count % 10 == 0:
+            print(f"[DEBUG] Frame {self.frame_count}:")
+            print(f"        Illuminated: {len(illuminated_targets)}")
+            print(f"        Detections:  {len(detections)} (Raw)")
+            print(f"        Valid Obs:   {len(obs_states)} (After filtering)")
+            print(f"        Tracks:      {len(tracks)}")
+        
         # --- AI INJECTION START ---
         # Critical Fix: Run Inference on confirmed tracks
         if tracks:
