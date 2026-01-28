@@ -1,191 +1,232 @@
 """
-Classical radar detection chain utilities: matched filtering, Range/Doppler FFTs,
-CA-CFAR and OS-CFAR detectors, and detection-statistics helpers.
+Radar Detection and Target Extraction Module
+=============================================
 
-This module is intentionally lightweight (NumPy) and designed to be
-configurable via `src.config.get_config()` under key `detection`.
+This module implements the tactical detection stage of the radar signal chain. 
+It converts processed spectral maps into discrete target observations through 
+adaptive thresholding and spatial clustering.
 
+Key Components:
+---------------
+1. CFAR (Constant False Alarm Rate) Detectors:
+   - Cell-Averaging (CA-CFAR): Estimates the local noise floor by averaging 
+     neighboring 'training' cells. Optimal in homogeneous Gaussian noise.
+   - Ordered-Statistics (OS-CFAR): Uses the k-th rank statistic of training 
+     cells. Resistant to 'target masking' in dense multi-target environments.
+
+2. Centroiding & Clustering:
+   - Since a single target may illuminate multiple Range-Doppler bins, 
+     connected-component labeling is used to group adjacent detections. 
+     The local peak of each cluster is selected as the representative observation.
+
+Mathematical Foundation:
+------------------------
+The detection threshold (T) is defined as: T = alpha * P_noise
+where 'alpha' is the threshold multiplier calculated to maintain a constant 
+Probability of False Alarm (Pfa).
+
+Author: Senior Radar Systems Engineer
 """
+
 from typing import Tuple, List, Dict, Optional
 import numpy as np
 from core.config import get_config
 from core.logger import log_event
+from signal_processing.transforms import compute_range_doppler_map
 
 
-def matched_filter(received: np.ndarray, template: np.ndarray) -> np.ndarray:
-    """Apply matched filtering via FFT convolution (linear convolution)."""
-    # compute convolution via FFT for speed
-    n = len(received) + len(template) - 1
-    N = 1 << (n - 1).bit_length()
-    R = np.fft.fft(received, N)
-    T = np.fft.fft(np.conj(template[::-1]), N)
-    y = np.fft.ifft(R * T)[:n]
-    return np.abs(y)
-
-
-def range_doppler_map(pulses: np.ndarray, n_range: int = 128, n_doppler: int = 128) -> np.ndarray:
-    """Compute a 2D Range-Doppler map from a pulse matrix (slow-time x fast-time).
-
-    pulses: shape (num_pulses, samples_per_pulse)
+def matched_filter_synthesis(received_signal: np.ndarray, 
+                             template_waveform: np.ndarray) -> np.ndarray:
     """
-    rd = np.fft.fftshift(np.fft.fft2(pulses, s=(n_doppler, n_range)))
-    return np.abs(rd)
-
-
-def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-4, min_pwr: float = 1e-3) -> Tuple[np.ndarray, float]:
+    Applies a matched filter via FFT-based circular convolution.
+    
+    This maximizes the SNR for a known pulse shape (e.g., LFM chirp) in 
+    stationary Gaussian noise.
     """
-    Standard Cell-Averaging CFAR (CA-CFAR) for 2D Range-Doppler maps.
-    Optimized for Square-Law detectors (Power).
-    Includes a min_pwr threshold to filter out extreme noise-floor triggers.
+    n_conv = len(received_signal) + len(template_waveform) - 1
+    # Use next power of 2 for FFT efficiency
+    n_fft = 1 << (n_conv - 1).bit_length()
+    
+    spectrum_rx = np.fft.fft(received_signal, n_fft)
+    spectrum_tx_matched = np.fft.fft(np.conj(template_waveform[::-1]), n_fft)
+    
+    filtered_output = np.fft.ifft(spectrum_rx * spectrum_tx_matched)[:n_conv]
+    return np.abs(filtered_output)
+
+
+def ca_cfar_detector(range_doppler_intensity: np.ndarray, 
+                     guard_cells: int = 2, 
+                     training_cells: int = 8, 
+                     pfa_target: float = 1e-4, 
+                     power_floor: float = 1e-3, 
+                     cognitive_alpha_scale: float = 1.0) -> Tuple[np.ndarray, float]:
+    """
+    Refined 2D Cell-Averaging CFAR.
+    
+    Calculates threshold 'alpha' based on the specified Pfa and the 
+    number of training cells available in the reference window.
     """
     from scipy.signal import fftconvolve
 
-    # Ensure rd_map is in linear power
-    # Square window dimensions
-    full_side = 2 * train + 2 * guard + 1
-    inner_side = 2 * guard + 1
+    # 1. Window Geometry
+    # Full window includes the Cell-Under-Test (CUT), Guard, and Training regions
+    window_side = 2 * training_cells + 2 * guard_cells + 1
+    guard_side = 2 * guard_cells + 1
 
-    # Kernel for full window and inner (guard+CUT) window
-    k_full = np.ones((full_side, full_side), dtype=float)
-    k_inner = np.ones((inner_side, inner_side), dtype=float)
+    # Convolution kernels (Masking)
+    kernel_full = np.ones((window_side, window_side), dtype=float)
+    kernel_guard = np.ones((guard_side, guard_side), dtype=float)
 
-    # Convolve to get sum over windows
-    sum_full = fftconvolve(rd_map, k_full, mode="same")
-    sum_inner = fftconvolve(rd_map, k_inner, mode="same")
+    # 2. Local Noise Floor Estimation
+    # sum_full: sum of all cells in the sliding window
+    # sum_guard: sum of cells in the guard + CUT region
+    sum_full = fftconvolve(range_doppler_intensity, kernel_full, mode="same")
+    sum_guard = fftconvolve(range_doppler_intensity, kernel_guard, mode="same")
 
-    num_train = (full_side**2) - (inner_side**2)
-    num_train = max(1, num_train)
+    n_training = (window_side**2) - (guard_side**2)
+    n_training = max(1, n_training)
     
-    # ALPHA CALCULATION (Square-law detector)
-    alpha = num_train * (pfa ** (-1.0 / num_train) - 1.0)
+    # 3. Alpha Thresholding Calculation (Square-law detector assumption)
+    # Ref: α = N * (Pfa^(-1/N) - 1)
+    alpha = n_training * (pfa_target ** (-1.0 / n_training) - 1.0)
+    alpha *= cognitive_alpha_scale
 
-    # Training sum = total window sum - guard/CUT sum
-    train_sum = sum_full - sum_inner
-    
-    # Mean noise power estimation
-    noise_level = train_sum / num_train
-    noise_level[noise_level <= 0] = 1e-12
+    # Estimated noise power (Average of training cells)
+    training_total_power = sum_full - sum_guard
+    local_noise_estimate = training_total_power / n_training
+    local_noise_estimate[local_noise_estimate <= 0] = 1e-12
 
-    threshold = noise_level * alpha
-    
-    # Combined detection: CFAR threshold and absolute power floor
-    det_map = (rd_map > threshold) & (rd_map > min_pwr)
+    # 4. Binary Decision
+    detection_threshold = local_noise_estimate * alpha
+    detection_binary_map = (range_doppler_intensity > detection_threshold) & (range_doppler_intensity > power_floor)
 
-    return det_map, float(alpha)
+    return detection_binary_map, float(alpha)
 
-def os_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-6, k_rank: Optional[int] = None) -> Tuple[np.ndarray, float]:
+
+def os_cfar_detector(range_doppler_intensity: np.ndarray, 
+                     guard_cells: int = 2, 
+                     training_cells: int = 8, 
+                     pfa_target: float = 1e-6, 
+                     rank_k: Optional[int] = None) -> Tuple[np.ndarray, float]:
     """
-    Ordered-Statistics CFAR (OS-CFAR).
-    More robust in multi-target environments (prevents target masking).
+    Ordered-Statistics CFAR for outlier-tolerant noise estimation.
     """
     from scipy.ndimage import generic_filter
     
-    m, n = rd_map.shape
-    full_side = 2 * train + 2 * guard + 1
-    inner_side = 2 * guard + 1
-    num_train = (full_side**2) - (inner_side**2)
+    window_side = 2 * training_cells + 2 * guard_cells + 1
+    guard_side = 2 * guard_cells + 1
+    n_training = (window_side**2) - (guard_side**2)
     
-    # Default rank k = 3/4 of training cells is a common defensive standard
-    if k_rank is None:
-        k_rank = int(0.75 * num_train)
+    # Selection of k-th rank (typically ~75th percentile for multi-target robustness)
+    if rank_k is None:
+        rank_k = int(0.75 * n_training)
     
-    # Define footprint mask (exclude guard cells and CUT)
-    footprint = np.ones((full_side, full_side), dtype=bool)
-    start_inner = train
-    end_inner = train + inner_side
-    footprint[start_inner:end_inner, start_inner:end_inner] = False
+    # Define hollow footprint mask (exclude guard/CUT)
+    footprint = np.ones((window_side, window_side), dtype=bool)
+    idx_start = training_cells
+    idx_end = training_cells + guard_side
+    footprint[idx_start:idx_end, idx_start:idx_end] = False
     
-    def os_threshold(buffer):
-        # Buffer contains only training cells due to footprint
-        sorted_cells = np.sort(buffer)
-        return sorted_cells[k_rank - 1]
+    def calculate_kth_statistic(buffer):
+        sorted_samples = np.sort(buffer)
+        return sorted_samples[rank_k - 1]
 
-    # Sliding window OS estimation (Note: this is computationally expensive compared to convolution)
-    noise_est = generic_filter(rd_map, os_threshold, footprint=footprint, mode='constant', cval=0.0)
+    # Non-linear sliding window filter
+    noise_statistics_map = generic_filter(range_doppler_intensity, calculate_kth_statistic, 
+                                        footprint=footprint, mode='constant', cval=0.0)
     
-    # OS-CFAR Alpha calculation (Approximate for Rayleigh noise)
-    # T = alpha * X_k
-    # Approximation for high k and low Pfa:
-    alpha = (-np.log(pfa))**(1.0/k_rank) # Simplified approximation
-    # For strict defense, we use lookup tables or more complex analytical forms.
-    # Here we use a tuned constant that provides reasonable performance.
-    alpha = 10**(3.0 / 10) # 3dB margin for the k-th statistic in this simulation
+    # Empirical alpha scaling for target Pfa (approximate)
+    alpha_os = 10**(3.5 / 10) 
     
-    threshold = noise_est * alpha
-    det_map = rd_map > threshold
+    detection_threshold = noise_statistics_map * alpha_os
+    detection_binary_map = range_doppler_intensity > detection_threshold
     
-    return det_map, float(alpha)
+    return detection_binary_map, float(alpha_os)
 
 
-def cluster_detections(det_map: np.ndarray, rd_map: np.ndarray) -> List[Tuple[int, int]]:
+def cluster_and_centroid_detections(detection_map: np.ndarray, 
+                                   intensity_map: np.ndarray) -> List[Tuple[int, int]]:
     """
-    Groups connected detection pixels and picks the local maximum for each cluster.
-    Prevents one target from generating multiple tracks.
+    Aggregates point-detections into target clusters and identifies local peaks.
+    
+    Returns a list of (row_idx, col_idx) for the centroid of each target.
     """
     from scipy.ndimage import label
     
-    if not np.any(det_map):
+    if not np.any(detection_map):
         return []
         
-    labeled_array, num_features = label(det_map)
-    centroids = []
+    labeled_regions, num_clusters = label(detection_map)
+    target_centroids = []
     
-    for i in range(1, num_features + 1):
-        # Find indices of this cluster
-        coords = np.argwhere(labeled_array == i)
+    for cluster_id in range(1, num_clusters + 1):
+        # Coordinates belonging to the current cluster
+        pixel_coords = np.argwhere(labeled_regions == cluster_id)
         
-        # Pick the coordinate with the maximum power in rd_map
-        cluster_powers = [rd_map[r, c] for r, c in coords]
-        max_idx = np.argmax(cluster_powers)
-        centroids.append(tuple(coords[max_idx]))
+        # Centroiding strategy: Peak Intensity Selection (Subpixel estimation could follow)
+        intensities = [intensity_map[r, c] for r, c in pixel_coords]
+        peak_idx = np.argmax(intensities)
+        target_centroids.append(tuple(pixel_coords[peak_idx]))
         
-    return centroids
+    return target_centroids
 
 
-def detect_targets_from_raw(signal: np.ndarray, fs: float = 4096, n_range: int = 128, n_doppler: int = 128,
-                            method: str = "ca", cluster: bool = True, **kwargs) -> Dict:
-    """Full detection pipeline from raw complex signal to detection list.
-
-    Returns dict with rd_map, det_map, detections (list of (i,j,value)), and stats.
+def execute_detection_pipeline(beat_signal_complex: np.ndarray, 
+                               num_pulses: int = 64, 
+                               samples_per_pulse: int = 64, 
+                               sampling_rate_hz: float = 4096, 
+                               n_fft_range: int = 128, 
+                               n_fft_doppler: int = 128,
+                               algorithm: str = "ca", 
+                               enable_clustering: bool = True, 
+                               **kwargs) -> Dict:
     """
-    # Validation
-    if signal is None or len(signal) == 0:
-        log_event("Empty signal received in detection pipeline", level="warning")
+    Standardized entry point for the Radar Detection stage.
+    """
+    if beat_signal_complex is None or len(beat_signal_complex) == 0:
+        log_event("[DETECTION] Null input received.", level="warning")
         return {
-            "rd_map": np.zeros((n_doppler, n_range)),
-            "det_map": np.zeros((n_doppler, n_range), dtype=bool),
+            "rd_map": np.zeros((n_fft_doppler, n_fft_range)),
+            "det_map": np.zeros((n_fft_doppler, n_fft_range), dtype=bool),
             "detections": [],
             "stats": {"num_detections": 0, "error": "Empty signal"}
         }
 
-    # Use centralized transform
-    from signal_processing.transforms import compute_range_doppler_map
-    rd_map = compute_range_doppler_map(signal, n_range=n_range, n_doppler=n_doppler)
+    # 1. Transform to Range-Doppler domain
+    range_doppler_intensity = compute_range_doppler_map(
+        beat_signal_complex, 
+        num_pulses=num_pulses, 
+        samples_per_pulse=samples_per_pulse,
+        n_fft_range=n_fft_range, 
+        n_fft_doppler=n_fft_doppler
+    )
 
-    if method.lower().startswith("ca"):
-        det_map, alpha = ca_cfar(rd_map, **kwargs)
+    # 2. Apply Thresholding Algorithm
+    if algorithm.lower().startswith("ca"):
+        detection_map, alpha = ca_cfar_detector(range_doppler_intensity, **kwargs)
     else:
-        det_map, alpha = os_cfar(rd_map, **kwargs)
+        detection_map, alpha = os_cfar_detector(range_doppler_intensity, **kwargs)
 
-    if cluster:
-        inds = cluster_detections(det_map, rd_map)
+    # 3. Geometric Post-Processing
+    if enable_clustering:
+        peak_coords = cluster_and_centroid_detections(detection_map, range_doppler_intensity)
     else:
-        inds = list(zip(*np.where(det_map)))
+        peak_coords = list(zip(*np.where(detection_map)))
         
-    detections = [(int(i), int(j), float(rd_map[i, j])) for i, j in inds]
+    # Format detections as (Doppler_Idx, Range_Idx, Intensity_dB)
+    formatted_detections = [(int(r), int(c), float(range_doppler_intensity[r, c])) for r, c in peak_coords]
 
-    stats = {
-        "num_detections": len(detections),
-        "alpha": alpha,
-        "pfa_requested": kwargs.get("pfa", None),
-        "clustered": cluster
+    pipeline_stats = {
+        "num_detections": len(formatted_detections),
+        "threshold_multiplier": alpha,
+        "is_clustered": enable_clustering
     }
 
-    log_event(f"Detection stats: {stats}", level="info")
+    log_event(f"[DETECTION] Completed. Detections identified: {pipeline_stats['num_detections']}", level="info")
 
     return {
-        "rd_map": rd_map,
-        "det_map": det_map,
-        "detections": detections,
-        "stats": stats
+        "rd_map": range_doppler_intensity,
+        "det_map": detection_map,
+        "detections": formatted_detections,
+        "stats": pipeline_stats
     }

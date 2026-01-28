@@ -1,115 +1,149 @@
 """
-Hybrid CNN-LSTM Radar Architecture (CRNN)
-=========================================
+Tactical Radar Intelligence: Hybrid Neural Architectures
+========================================================
 
-This module defines advanced neural architectures for Radar Intelligence.
-1. CNN Branch: Extracts spatial features from 2D Spectrograms.
-2. LSTM Branch: Extracts temporal features from 1D Doppler time-series.
-3. Hybrid Fusion: Combines both branches for robust threat classification.
+This module implements high-performance deep learning architectures tailored 
+for photonic radar signatrue analysis. It utilizes a hybrid approach:
+1. Spatial-Spectral Encoder (CNN): Processes 2D Range-Doppler maps to extract 
+   spatial scattering characteristics.
+2. Kinematic-Temporal Encoder (LSTM): Processes 1D Doppler time-series to capture 
+   dynamic micro-motion signatures.
+3. Feature Fusion Layer: Aggregates both modalities for robust classification.
 
-Author: Radar AI Engineer
+Architecture Design:
+--------------------
+- Residual Connections: Mitigates vanishing gradient issues and preserves low-level 
+  spectral features.
+- Bahdanau Attention: Dynamically weights temporal segments of the Doppler signal 
+  to focus on transitionary kinematic events.
+
+Author: Senior AI Research Scientist (Radar Intelligence)
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ResidualBlock(nn.Module):
-    def __init__(self, in_channels, out_channels, stride=1):
-        super(ResidualBlock, self).__init__()
+
+class TacticalResidualBlock(nn.Module):
+    """
+    Implements a 2D Residual block for deep spectral feature extraction.
+    """
+    def __init__(self, in_channels: int, out_channels: int, stride: int = 1):
+        super(TacticalResidualBlock, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=3, stride=stride, padding=1)
         self.bn1 = nn.BatchNorm2d(out_channels)
         self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=3, stride=1, padding=1)
         self.bn2 = nn.BatchNorm2d(out_channels)
         
-        self.shortcut = nn.Sequential()
+        self.identity_mapping = nn.Sequential()
         if stride != 1 or in_channels != out_channels:
-            self.shortcut = nn.Sequential(
+            self.identity_mapping = nn.Sequential(
                 nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
                 nn.BatchNorm2d(out_channels)
             )
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = self.identity_mapping(x)
         out = F.relu(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        out += self.shortcut(x)
+        out += residual
         return F.relu(out)
 
-class AttentionBlock(nn.Module):
+
+class KinematicAttentionBlock(nn.Module):
     """
-    Bahdanau-style Attention for focusing on key temporal events in Doppler series.
+    Computes attention weights over temporal kinematic sequences.
     """
-    def __init__(self, hidden_size):
-        super(AttentionBlock, self).__init__()
-        self.attn = nn.Linear(hidden_size, 1)
+    def __init__(self, hidden_dimension: int):
+        super(KinematicAttentionBlock, self).__init__()
+        self.attention_score_layer = nn.Linear(hidden_dimension, 1)
 
-    def forward(self, lstm_output):
-        # lstm_output: (batch, seq_len, hidden_size)
-        attn_weights = F.softmax(self.attn(lstm_output), dim=1)
-        # weights: (batch, seq_len, 1)
-        context = torch.sum(attn_weights * lstm_output, dim=1)
-        return context, attn_weights
+    def forward(self, sequential_output: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        # sequential_output: (batch_size, sequence_length, hidden_dimension)
+        scores = self.attention_score_layer(sequential_output)
+        weights = F.softmax(scores, dim=1)
+        # Context vector via weighted summation
+        context_vector = torch.sum(weights * sequential_output, dim=1)
+        return context_vector, weights
 
-class SpectralCNN(nn.Module):
-    def __init__(self, in_channels=1):
-        super(SpectralCNN, self).__init__()
-        self.layer1 = ResidualBlock(in_channels, 16)
-        self.layer2 = ResidualBlock(16, 32, stride=2)
-        self.layer3 = ResidualBlock(32, 64, stride=2)
-        self.pool = nn.AdaptiveAvgPool2d((4, 4))
-        self.fc = nn.Linear(64 * 4 * 4, 256)
 
-    def forward(self, x):
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.pool(x)
+class SpatialSpectralEncoder(nn.Module):
+    """
+    CNN-based encoder for Range-Doppler intensity maps.
+    """
+    def __init__(self, input_channels: int = 1):
+        super(SpatialSpectralEncoder, self).__init__()
+        self.stage1 = TacticalResidualBlock(input_channels, 16)
+        self.stage2 = TacticalResidualBlock(16, 32, stride=2)
+        self.stage3 = TacticalResidualBlock(32, 64, stride=2)
+        self.global_pool = nn.AdaptiveAvgPool2d((4, 4))
+        self.projection = nn.Linear(64 * 4 * 4, 256)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.stage1(x)
+        x = self.stage2(x)
+        x = self.stage3(x)
+        x = self.global_pool(x)
         x = x.view(x.size(0), -1)
-        return F.relu(self.fc(x))
+        return F.relu(self.projection(x))
 
-class TemporalLSTM(nn.Module):
-    def __init__(self, input_size=1, hidden_size=64, num_layers=2):
-        super(TemporalLSTM, self).__init__()
-        # Use bidirectional for better context
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True, bidirectional=True)
-        self.attention = AttentionBlock(hidden_size * 2)
-        self.fc = nn.Linear(hidden_size * 2, 128)
 
-    def forward(self, x):
+class KinematicTemporalEncoder(nn.Module):
+    """
+    RNN-based encoder for 1D Doppler/Kinematic time-series.
+    """
+    def __init__(self, input_dim: int = 1, hidden_dim: int = 64, num_layers: int = 2):
+        super(KinematicTemporalEncoder, self).__init__()
+        # Bidirectional LSTM captures future/past context in the Doppler shift
+        self.recurrent_unit = nn.LSTM(input_dim, hidden_dim, num_layers, 
+                                     batch_first=True, bidirectional=True)
+        self.attention_mechanism = KinematicAttentionBlock(hidden_dim * 2)
+        self.projection = nn.Linear(hidden_dim * 2, 128)
+
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         if x.dim() == 2:
             x = x.unsqueeze(-1)
-        out, _ = self.lstm(x)
-        context, attn_weights = self.attention(out)
-        return F.relu(self.fc(context)), attn_weights
+        sequence_data, _ = self.recurrent_unit(x)
+        context_vector, attention_weights = self.attention_mechanism(sequence_data)
+        return F.relu(self.projection(context_vector)), attention_weights
 
-class HybridRadarNet(nn.Module):
-    def __init__(self, num_classes=5):
-        super(HybridRadarNet, self).__init__()
-        self.cnn = SpectralCNN()
-        self.lstm = TemporalLSTM()
+
+class TacticalHybridClassifier(nn.Module):
+    """
+    State-of-the-art hybrid architecture for radar target classification.
+    """
+    def __init__(self, num_classes: int = 5):
+        super(TacticalHybridClassifier, self).__init__()
+        self.spectral_encoder = SpatialSpectralEncoder()
+        self.temporal_encoder = KinematicTemporalEncoder()
         
-        self.classifier = nn.Sequential(
+        self.fusion_head = nn.Sequential(
             nn.Linear(256 + 128, 128),
             nn.LayerNorm(128),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.3),
             nn.Linear(128, num_classes)
         )
 
-    def forward(self, spectrogram, time_series):
-        cnn_feat = self.cnn(spectrogram)
-        lstm_feat, attn_weights = self.lstm(time_series)
+    def forward(self, 
+                range_doppler_map: torch.Tensor, 
+                kinematic_timeseries: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        """
+        Multimodal forward pass.
+        Args:
+            range_doppler_map: (Batch, 1, H, W) tensor.
+            kinematic_timeseries: (Batch, Seq_Len) or (Batch, Seq_Len, 1) tensor.
+        """
+        spatial_features = self.spectral_encoder(range_doppler_map)
+        temporal_features, attention_weights = self.temporal_encoder(kinematic_timeseries)
         
-        fused = torch.cat((cnn_feat, lstm_feat), dim=1)
-        logits = self.classifier(fused)
-        return logits, attn_weights
+        multimodal_concatenation = torch.cat((spatial_features, temporal_features), dim=1)
+        classification_logits = self.fusion_head(multimodal_concatenation)
+        
+        return classification_logits, attention_weights
 
-def get_hybrid_model(num_classes=4):
-    return HybridRadarNet(num_classes=num_classes)
 
-if __name__ == "__main__":
-    model = get_hybrid_model()
-    spec = torch.randn(8, 1, 128, 128)
-    ts = torch.randn(8, 1000)
-    out = model(spec, ts)
-    print(f"Model output shape: {out.shape} | Classes: {torch.argmax(out, dim=1)}")
+def initialize_tactical_model(num_target_classes: int = 5) -> TacticalHybridClassifier:
+    """Factory function for model instantiation."""
+    return TacticalHybridClassifier(num_classes=num_target_classes)

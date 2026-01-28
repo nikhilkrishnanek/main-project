@@ -1,142 +1,215 @@
 """
-System Pipeline Orchestrator (Metrics Integrated)
-================================================
+Strategic Radar Orchestration and Cognitive Feedback Loop
+==========================================================
 
-Connects the Simulation, DSP, and AI layers into a coherent pipeline.
-Now includes advanced performance evaluation.
+This module implements the primary execution pipeline for the photonic 
+radar system. It orchestrates the flow of data across the six architectural 
+layers: Simulation, Photonic, DSP, AI, Tracking, and Cognitive Feedback.
 
-Author: Principal Systems Architect
+The pipeline is "cognitive" in that it utilizes AI-driven assessments 
+to adaptively reconfigure hardware parameters (bandwidth, power, thresholds) 
+for the subsequent processing frame.
+
+Key Orchestration Stages:
+-------------------------
+1. Adaptive Reconfiguration: Applies feedback from frame N-1 to frame N.
+2. Signal Synthesis: Generates high-fidelity heterodyne photonic RF signals.
+3. DSP Pipeline: Executes de-chirping, spectral mapping, and CA-CFAR detection.
+4. Intelligence & Tracking: Performs GNN-based tracking and multimodal AI classification.
+5. Metrics & QA: Benchmarks resolution, SNR, and model confidence.
+
+Author: Lead Systems Architect (Advanced Radar Systems)
 """
 
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from photonic.signals import generate_photonic_signal, PhotonicConfig
+from photonic.signals import generate_synthetic_photonic_signal, PhotonicConfig
 from photonic.environment import simulate_target_response, Target, ChannelConfig
 from photonic.noise import add_rin_noise, apply_fiber_dispersion, add_thermal_noise, NoiseConfig
-from signal.transforms import (
+from signal_processing.transforms import (
     dechirp_signal, 
     compute_range_doppler_map, 
     compute_spectrogram, 
-    extract_features
+    extract_statistical_features
 )
 from evaluation.metrics import (
-    calculate_resolutions, 
-    calculate_snr_db, 
-    calculate_pd_swerling1, 
-    calculate_far, 
-    evaluate_model_confidence,
+    calculate_theoretical_resolutions, 
+    calculate_snr_decibels, 
+    estimate_pd_swerling1, 
+    estimate_false_alarm_rate, 
+    evaluate_ai_inference_confidence,
     ResolutionMetrics,
     PerformanceStats
 )
-from ai.model import ClassifierPipeline, Prediction
+from ai_models.model import IntelligencePipeline, IntelligenceOutput
+from cognitive.engine import CognitiveRadarEngine, create_track_dict_for_cognitive
+from tracking.manager import TacticalTrackManager
+from signal_processing.detection import execute_detection_pipeline
+
 
 @dataclass
-class RadarFrame:
-    """Container for a single radar processing frame."""
-    time_axis: np.ndarray
-    rx_signal: np.ndarray
-    rd_map: np.ndarray
-    spectrogram: np.ndarray
-    prediction: Prediction
-    metrics: dict
-    performance: ResolutionMetrics
-    stats: PerformanceStats
+class TacticalIntelligenceFrame:
+    """
+    Standardized telemetry container for a single processing cycle.
+    """
+    frame_id: int
+    time_velocity_axis: np.ndarray
+    raw_rx_signal: np.ndarray
+    range_doppler_map: np.ndarray
+    micro_doppler_spectrogram: np.ndarray
+    intelligence_output: IntelligenceOutput
+    stat_metrics: dict
+    resolution_benchmarks: ResolutionMetrics
+    probabilistic_stats: PerformanceStats
+    cognitive_narrative: str = ""
 
-class RadarPipeline:
-    def __init__(self):
-        self.ai = ClassifierPipeline() # Persistent AI model
-        
-    def run(self, 
-            p_cfg: PhotonicConfig, 
-            c_cfg: ChannelConfig, 
-            n_cfg: NoiseConfig,
-            targets: List[Target]
-            ) -> RadarFrame:
+
+class CognitiveRadarPipeline:
+    """
+    High-level orchestration engine for the Cognitive Photonic Radar.
+    """
+    def __init__(self, sampling_period_s: float = 1e-3):
         """
-        Executes one full frame of the radar loop.
+        Initializes the strategic pipeline components.
         """
-        # --- 1. Simulation Layer ---
-        t, tx_sig = generate_photonic_signal(p_cfg)
+        self.intelligence_unit = IntelligencePipeline() 
+        self.cognitive_engine = CognitiveRadarEngine()
+        self.track_manager = TacticalTrackManager(sampling_period_s=sampling_period_s)
+        self.frame_index = 0
+        self.active_adaptation = None
         
-        # Apply Channel (Echoes + Noise)
-        rx_sig = simulate_target_response(tx_sig, p_cfg.fs, targets, c_cfg)
+    def execute_tactical_processing_frame(self, 
+                                        photonic_cfg: PhotonicConfig, 
+                                        channel_cfg: ChannelConfig, 
+                                        noise_cfg: NoiseConfig,
+                                        active_targets: List[Target]
+                                        ) -> TacticalIntelligenceFrame:
+        """
+        Executes a complete closed-loop radar processing cycle.
+        """
+        self.frame_index += 1
         
-        # Apply Advanced Noise (Optional Layer)
-        rin = add_rin_noise(10**(p_cfg.optical_power_dbm/10 - 3), n_cfg, len(tx_sig), p_cfg.fs)
-        rx_sig += rin 
-        rx_sig = apply_fiber_dispersion(rx_sig, n_cfg, p_cfg.fs)
-        rx_sig = add_thermal_noise(rx_sig, n_cfg, p_cfg.fs)
+        # --- 1. Cognitive Parameter Adaptation (Feedback Loop) ---
+        # Apply scaling factors computed from the previous frame's assessment
+        if self.active_adaptation:
+            photonic_cfg.bandwidth_scaling_factor = self.active_adaptation.bandwidth_scaling
+            photonic_cfg.transmit_power_scaling_factor = self.active_adaptation.tx_power_scaling
+            
+        # --- 2. Photonic Signal Generation & Environment Simulation ---
+        time_vector, tx_pulse = generate_synthetic_photonic_signal(photonic_cfg)
         
-        # --- Future Hardware Hook ---
-        # if st.session_state.get('use_hardware'):
-        #     from interfaces.hardware import SDRInterface
-        #     rx_sig = sdr_interface.stream_iq(len(tx_sig))
+        # Simulate physical environment (Reflection, Delay, Doppler)
+        rx_echoes = simulate_target_response(tx_pulse, photonic_cfg.sampling_rate_hz, 
+                                           active_targets, channel_cfg)
         
-        # --- 2. DSP Layer ---
-        if_sig = dechirp_signal(rx_sig, tx_sig)
+        # Inject hardware-level noise (RIN, Dispersion, Thermal)
+        optical_pwr_watts = 10**(photonic_cfg.optical_power_dbm/10 - 3)
+        rx_signal_noised = rx_echoes + add_rin_noise(optical_pwr_watts, noise_cfg, 
+                                                   len(tx_pulse), photonic_cfg.sampling_rate_hz)
+        rx_signal_noised = apply_fiber_dispersion(rx_signal_noised, noise_cfg, photonic_cfg.sampling_rate_hz)
+        rx_signal_noised = add_thermal_noise(rx_signal_noised, noise_cfg, photonic_cfg.sampling_rate_hz)
         
-        samples_per_chirp = 64
-        n_chirps = 64
+        # --- 3. Digital Signal Processing (DSP) & Detection ---
+        intermediate_freq_signal = dechirp_signal(rx_signal_noised, tx_pulse)
         
-        rd_map = compute_range_doppler_map(
-            if_sig, n_chirps=n_chirps, samples_per_chirp=samples_per_chirp
-        )
-        spec = compute_spectrogram(if_sig, p_cfg.fs)
+        # Configure tactical CPI (Coherent Processing Interval)
+        pulses_per_cpi = 64
+        samples_per_pulse = 64
         
-        # --- Metrics Calculation ---
-        # 1. Resolutions
-        perf = calculate_resolutions(
-            p_cfg.bandwidth, p_cfg.duration, c_cfg.carrier_freq, n_chirps, p_cfg.fs
-        )
-        
-        # 2. SNR
-        # Estimate signal peak and noise floor from RD Map
-        peak_pow = np.max(rd_map)
-        noise_pow = np.median(rd_map)
-        snr_est = peak_pow - noise_pow  # Log scale subtraction
-        
-        # 3. Detection Stats (Pd, FAR)
-        # Using a fixed reference Pfa or threshold for estimation
-        pd_val = calculate_pd_swerling1(snr_est, pfa=1e-6)
-        
-        # Estimate FAR for a nominal threshold (e.g. 13dB above noise)
-        # This is strictly theoretical based on current noise floor
-        far_val = calculate_far(threshold_level=13.0, noise_variance=1.0) # Normalized
-        
-        # --- 3. AI Layer ---
-        pred = self.ai.predict(rd_map, spec)
-        
-        # 4. Confidence Stats
-        conf_stats = evaluate_model_confidence(list(pred.probabilities.values()))
-        
-        # Feature Extraction
-        feats = extract_features(if_sig)
-        
-        # Compile Performance Stats
-        stats = PerformanceStats(
-            snr_db=snr_est,
-            probability_detection=pd_val,
-            false_alarm_rate=far_val,
-            model_confidence=conf_stats["confidence"],
-            model_entropy=conf_stats["entropy"]
+        # Detect targets using adaptive CFAR logic
+        cfar_alpha_scale = self.active_adaptation.cfar_alpha_scale if self.active_adaptation else 1.0
+        dsp_results = execute_detection_pipeline(
+            intermediate_freq_signal, 
+            num_pulses=pulses_per_cpi, 
+            samples_per_pulse=samples_per_pulse,
+            sampling_rate_hz=photonic_cfg.sampling_rate_hz, 
+            n_fft_range=128, 
+            n_fft_doppler=128,
+            cognitive_alpha_scale=cfar_alpha_scale
         )
         
-        # Generic DSP features
-        metrics_dict = {
-            "snr_db": snr_est,
-            **feats
-        }
+        rd_intensity_map = dsp_results["rd_map"]
+        target_centroids = [(d[0], d[1]) for d in dsp_results["detections"]]
         
-        # --- 4. Package ---
-        return RadarFrame(
-            time_axis=t,
-            rx_signal=rx_sig,
-            rd_map=rd_map,
-            spectrogram=spec,
-            prediction=pred,
-            metrics=metrics_dict,
-            performance=perf,
-            stats=stats
+        # Extract temporal frequency signatures (Micro-Doppler)
+        micro_doppler_spec = compute_spectrogram(intermediate_freq_signal, photonic_cfg.sampling_rate_hz)
+        
+        # --- 4. Tactical Tracking & Multimodal AI Intelligence ---
+        # Map spectral indices to physical world coordinates (Simplified for demo)
+        observed_vectors = [(c[0] * 5.0, c[1] * 0.5) for c in target_centroids] 
+        track_summaries = self.track_manager.update_pipeline(observed_vectors)
+        
+        # Multimodal classification of the primary target cluster
+        intel_output = self.intelligence_unit.infer_tactical_intelligence(rd_intensity_map, micro_doppler_spec)
+        
+        # --- 5. Situation Assessment & Cognitive Decisioning ---
+        # Prepare track data for cognitive assessment
+        track_dictionaries = [create_track_dict_for_cognitive(t) for t in self.track_manager.active_tracks]
+        
+        # Per-target intelligence mapping
+        target_classifications = []
+        for track in track_summaries:
+            target_classifications.append({
+                "class": intel_output.tactical_class,
+                "confidence": intel_output.inference_confidence,
+                "class_probabilities": list(intel_output.class_probabilities.values())
+            })
+            
+        situation_assessment = self.cognitive_engine.assess_situation(
+            frame_id=self.frame_index,
+            timestamp=float(self.frame_index * 0.1),
+            detections=observed_vectors,
+            tracks=track_dictionaries,
+            ai_predictions=target_classifications,
+            rd_map=rd_intensity_map
+        )
+        
+        # Compute adaptation commands for the next frame (N+1)
+        self.active_adaptation = self.cognitive_engine.decide_adaptation(situation_assessment)
+        xai_narrative = self.cognitive_engine.generate_xai_narrative(situation_assessment, self.active_adaptation)
+        
+        # --- 6. Performance Benchmarking & QA ---
+        resolution_benchmarks = calculate_theoretical_resolutions(
+            photonic_cfg.sweep_bandwidth_hz * photonic_cfg.bandwidth_scaling_factor, 
+            photonic_cfg.chirp_duration_s, 
+            channel_cfg.carrier_freq, 
+            pulses_per_cpi, 
+            photonic_cfg.sampling_rate_hz
+        )
+        
+        # SNR Estimation from residue-to-peak ratio
+        peak_pwr = np.max(rd_intensity_map)
+        noise_floor = np.median(rd_intensity_map)
+        snr_est_db = float(peak_pwr - noise_floor)
+        
+        # Statistical confidence validation
+        pd_estimate = estimate_pd_swerling1(snr_est_db, pfa_target=1e-6)
+        far_estimate = estimate_false_alarm_rate(threshold_voltage=13.0, noise_variance=1.0)
+        
+        # Extract metadata from AI probabilities
+        inference_stats = evaluate_ai_inference_confidence(list(intel_output.class_probabilities.values()))
+        feature_vector = extract_statistical_features(intermediate_freq_signal)
+        
+        probabilistic_stats = PerformanceStats(
+            snr_db=snr_est_db,
+            probability_detection=pd_estimate,
+            false_alarm_rate=far_estimate,
+            model_confidence=inference_stats["confidence"],
+            model_entropy=inference_stats["entropy"]
+        )
+        
+        # --- 7. Final Data Packaging ---
+        return TacticalIntelligenceFrame(
+            frame_id=self.frame_index,
+            time_velocity_axis=time_vector,
+            raw_rx_signal=rx_signal_noised,
+            range_doppler_map=rd_intensity_map,
+            micro_doppler_spectrogram=micro_doppler_spec,
+            intelligence_output=intel_output,
+            stat_metrics={**feature_vector, "snr_db": snr_est_db},
+            resolution_benchmarks=resolution_benchmarks,
+            probabilistic_stats=probabilistic_stats,
+            cognitive_narrative=xai_narrative
         )

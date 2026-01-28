@@ -1,55 +1,75 @@
+"""
+Batch Intelligence Engine: High-Throughput Radar Inference
+==========================================================
+
+This module provides high-throughput inference capabilities for processing 
+large radar datasets or real-time batch streams. It utilizes the 
+TacticalHybridClassifier for multimodal intelligence extraction.
+
+Author: Senior AI Performance Engineer
+"""
+
 import torch
 import torch.nn.functional as F
 import numpy as np
 import os
-from ai.model import DualStreamRadarNet as build_pytorch_model
-from core.config import get_config
+from ai_models.architectures import TacticalHybridClassifier, initialize_tactical_model
+from ai_models.model import get_tactical_classes
 
-class InferenceEngine:
-    def __init__(self, model_path=None):
+
+class BatchIntelligenceEngine:
+    """
+    Performance-optimized engine for batch radar inference.
+    """
+    def __init__(self, model_checkpoint_path: str = None):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.config = get_config()
-        self.num_classes = 6 # defined in config usually
-        self.metadata_size = 8
+        self.target_labels = get_tactical_classes()
+        self.num_classes = len(self.target_labels)
         
-        self.model = build_pytorch_model(num_classes=self.num_classes)
+        # Initialize standardized architecture
+        self.model = initialize_tactical_model(num_target_classes=self.num_classes)
         self.model.to(self.device)
         self.model.eval()
         
-        if model_path and os.path.exists(model_path):
+        if model_checkpoint_path and os.path.exists(model_checkpoint_path):
             try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
-                print(f"Loaded model from {model_path}")
+                self.model.load_state_dict(torch.load(model_checkpoint_path, map_location=self.device))
+                print(f"[INTEL-BATCH] Successfully loaded checkpoint: {model_checkpoint_path}")
             except Exception as e:
-                print(f"Failed to load model: {e}")
+                print(f"[INTEL-BATCH] Critical failure during checkpoint loading: {e}")
         else:
-            print("Initialized with random weights (no model found)")
+            print("[INTEL-BATCH] Proceeding with heuristic initialization.")
 
-    def predict(self, rd_map, spectrogram, metadata):
+    def run_batch_inference(self, 
+                            range_doppler_batch: np.ndarray, 
+                            kinematic_series_batch: np.ndarray) -> np.ndarray:
         """
-        Run inference on single sample.
-        rd_map: (H, W)
-        spectrogram: (H, W) or other
-        metadata: (8,)
-        """
-        # Prepare tensors
-        rd_tensor = torch.tensor(rd_map, dtype=torch.float32).to(self.device)
-        spec_tensor = torch.tensor(spectrogram, dtype=torch.float32).to(self.device)
-        meta_tensor = torch.tensor(metadata, dtype=torch.float32).unsqueeze(0).to(self.device)
+        Executes inference on a batch of radar samples.
         
-        # Add batch and channel dims -> (1, 1, H, W)
-        rd_tensor = rd_tensor.unsqueeze(0).unsqueeze(0)
-        spec_tensor = spec_tensor.unsqueeze(0).unsqueeze(0)
-        
-        # Resize to expected model input (128, 128)
-        rd_tensor = F.interpolate(rd_tensor, size=(128, 128), mode='bilinear', align_corners=False)
-        spec_tensor = F.interpolate(spec_tensor, size=(128, 128), mode='bilinear', align_corners=False)
-        
-        with torch.no_grad():
-            logits = self.model(rd_tensor, spec_tensor, meta_tensor)
-            probs = torch.nn.functional.softmax(logits, dim=1)
+        Args:
+            range_doppler_batch: (Batch, H, W) numpy array.
+            kinematic_series_batch: (Batch, Seq_Len) numpy array.
             
-        return probs.cpu().numpy()[0] # Return 1D array of probs
+        Returns:
+            Numpy array of shape (Batch, Num_Classes) containing soft probabilities.
+        """
+        # 1. Tensor Conversion & Preprocessing
+        rd_tensor = torch.tensor(range_doppler_batch, dtype=torch.float32).to(self.device)
+        ts_tensor = torch.tensor(kinematic_series_batch, dtype=torch.float32).to(self.device)
+        
+        # 2. Add Channel Dimension if missing (Batch, 1, H, W)
+        if rd_tensor.dim() == 3:
+            rd_tensor = rd_tensor.unsqueeze(1)
+        
+        # 3. Spatial Resampling (Standardize to 128x128)
+        rd_tensor = F.interpolate(rd_tensor, size=(128, 128), mode='bilinear', align_corners=False)
+        
+        # 4. Multimodal Inference
+        with torch.no_grad():
+            logits, _ = self.model(rd_tensor, ts_tensor)
+            probabilities = F.softmax(logits, dim=1)
+            
+        return probabilities.cpu().numpy()
 
-    def get_classes(self):
-        return ["Drone", "Bird", "Aircraft", "Missile", "Helicopter", "Clutter"]
+    def get_canonical_labels(self) -> list:
+        return self.target_labels

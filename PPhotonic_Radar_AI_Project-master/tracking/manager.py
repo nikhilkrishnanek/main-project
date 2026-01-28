@@ -1,173 +1,212 @@
 """
-Multi-Target Track Manager
-==========================
+Tactical Track Management and Data Association
+===============================================
 
-Handles the lifecycle of multiple radar tracks using a multi-state machine
-and Mahalanobis-based Global Nearest Neighbor (GNN) association.
+This module orchestrates the lifecycle of multiple target tracks using 
+a multi-state logic controller and Global Nearest Neighbor (GNN) association.
 
-Track States:
-- PROVISIONAL: Initial detection, needs N consecutive hits to confirm.
-- CONFIRMED: High-confidence track.
-- COASTING: Target lost, predicting state based on motion model (Re-acquisition).
+Track State Transition Logic:
+-----------------------------
+1. PROVISIONAL: Newly initiated track from a single detection. Requires 
+   M-of-N confirmation (e.g., 3 consecutive hits) to become CONFIRMED.
+2. CONFIRMED: High-confidence track with active measurement updates.
+3. COASTING: Temporary loss of detection; state is predicted using the 
+   last known kinematics until either re-acquired or pruned.
+4. DELETED: Track removed from the tactical inventory due to persistent loss.
 
-Author: Principal Radar Tracking Scientist
+Association Strategy:
+---------------------
+GNN association is performed using the Mahalanobis distance, which accounts 
+for both the spatial residual and the filter's current estimation uncertainty.
+
+Author: Senior Tracking & Fusion Architect
 """
 
 import numpy as np
 from enum import Enum
 from typing import List, Dict, Optional, Tuple
-from tracking.kalman import KalmanFilter
+from tracking.kalman import KinematicKalmanFilter
 
-class TrackState(Enum):
+
+class TacticalTrackState(Enum):
+    """Enumeration of valid states in the track lifecycle."""
     PROVISIONAL = 1
-    CONFIRMED = 2
-    COASTING = 3
-    DELETED = 4
+    CONFIRMED   = 2
+    COASTING    = 3
+    DELETED     = 4
 
-class RadarTrack:
-    def __init__(self, track_id: int, initial_meas: np.ndarray, dt: float, max_coast: int = 20):
+
+class KinematicTrack:
+    """
+    Represents a single tactical entity being tracked by the system.
+    """
+    def __init__(self, 
+                 track_id: int, 
+                 initial_measurement: np.ndarray, 
+                 sampling_period_s: float, 
+                 max_coasting_frames: int = 20):
         self.track_id = track_id
-        self.max_coast = max_coast
-        self.kf = KalmanFilter(dt=dt)
-        # Initialize state: [range, velocity, 0]
-        self.kf.x = np.array([initial_meas[0], initial_meas[1], 0.0])
+        self.max_coasting_frames = max_coasting_frames
         
-        self.state = TrackState.PROVISIONAL
-        self.age = 1
-        self.hits = 1
-        self.misses_total = 0
-        self.consecutive_misses = 0
-        self.consecutive_hits = 1
+        # Core State Estimator
+        self.state_estimator = KinematicKalmanFilter(sampling_period_s=sampling_period_s)
         
-    def predict(self):
-        self.age += 1
-        return self.kf.predict()
+        # Seed the filter with initial position and velocity
+        # [Range, Velocity, Acceleration]
+        self.state_estimator.state_vector = np.array([initial_measurement[0], initial_measurement[1], 0.0])
         
-    def update(self, z: np.ndarray):
-        """Successful association update."""
-        self.hits += 1
-        self.consecutive_hits += 1
-        self.consecutive_misses = 0
+        # Lifecycle Management
+        self.current_state = TacticalTrackState.PROVISIONAL
+        self.track_age_frames = 1
+        self.total_detections_count = 1
+        self.coasting_frame_count = 0
+        self.consecutive_detection_count = 1
         
-        # State Transition: Provisional -> Confirmed
-        if self.state == TrackState.PROVISIONAL and self.consecutive_hits >= 3:
-            self.state = TrackState.CONFIRMED
+    def predict_next_state(self):
+        """Advances the track kinematics using the internal motion model."""
+        self.track_age_frames += 1
+        return self.state_estimator.predict()
         
-        # State Transition: Coasting -> Confirmed
-        if self.state == TrackState.COASTING:
-            self.state = TrackState.CONFIRMED
+    def synchronize_with_measurement(self, observation_vector: np.ndarray):
+        """Updates the track state with a confirmed tactical measurement."""
+        self.total_detections_count += 1
+        self.consecutive_detection_count += 1
+        self.coasting_frame_count = 0
+        
+        # Promotion: Provisional -> Confirmed
+        if self.current_state == TacticalTrackState.PROVISIONAL and self.consecutive_detection_count >= 3:
+            self.current_state = TacticalTrackState.CONFIRMED
+        
+        # Re-acquisition: Coasting -> Confirmed
+        if self.current_state == TacticalTrackState.COASTING:
+            self.current_state = TacticalTrackState.CONFIRMED
 
-        return self.kf.update(z)
+        return self.state_estimator.update(observation_vector)
         
-    def mark_miss(self):
-        """Handle missed detection (Coasting)."""
-        self.consecutive_misses += 1
-        self.misses_total += 1
-        self.consecutive_hits = 0
+    def handle_missed_detection(self):
+        """Processes a frame where no measurement was associated with this track."""
+        self.coasting_frame_count += 1
+        self.consecutive_detection_count = 0
         
-        if self.state == TrackState.CONFIRMED:
-            self.state = TrackState.COASTING
+        # Enter Coasting mode if a confirmed track is lost
+        if self.current_state == TacticalTrackState.CONFIRMED:
+            self.current_state = TacticalTrackState.COASTING
             
-        # Deletion logic
-        if self.state == TrackState.PROVISIONAL and self.consecutive_misses >= 2:
-            self.state = TrackState.DELETED
-        elif self.state == TrackState.COASTING and self.consecutive_misses >= self.max_coast:
-            self.state = TrackState.DELETED
+        # Deletion logic (Pruning)
+        if self.current_state == TacticalTrackState.PROVISIONAL and self.coasting_frame_count >= 2:
+            self.current_state = TacticalTrackState.DELETED
+        elif self.current_state == TacticalTrackState.COASTING and self.coasting_frame_count >= self.max_coasting_frames:
+            self.current_state = TacticalTrackState.DELETED
 
     @property
-    def active(self) -> bool:
-        return self.state != TrackState.DELETED
+    def is_active(self) -> bool:
+        """Returns True if the track is still part of the tactical inventory."""
+        return self.current_state != TacticalTrackState.DELETED
 
-class TrackManager:
-    def __init__(self, dt: float, association_gate: float = 3.5, max_coast_frames: int = 20):
+
+class TacticalTrackManager:
+    """
+    Controller for multi-target tracking and data association.
+    """
+    def __init__(self, 
+                 sampling_period_s: float, 
+                 association_gate_sigma: float = 3.5, 
+                 max_coast_interval: int = 20):
         """
         Args:
-            dt: Sampling time.
-            association_gate: Mahalanobis distance threshold (Standard deviations).
-            max_coast_frames: Number of frames to hold track without detection.
+            sampling_period_s: Radar frame interval.
+            association_gate_sigma: Mahalanobis distance threshold (gate).
+            max_coast_interval: Maximum frames to coast a lost track.
         """
-        self.dt = dt
-        self.tracks: List[RadarTrack] = []
-        self.next_id = 1
-        self.association_gate = association_gate 
-        self.max_coast_frames = max_coast_frames
+        self.dt = sampling_period_s
+        self.active_tracks: List[KinematicTrack] = []
+        self.global_track_id_counter = 1
+        self.association_gate_sigma = association_gate_sigma 
+        self.max_coast_interval = max_coast_interval
 
-    def update(self, detections: List[Tuple[float, float]]) -> List[Dict]:
+    def update_pipeline(self, current_detections: List[Tuple[float, float]]) -> List[Dict]:
         """
-        Orchestrates the tracking cycle: Predict -> Associate -> Update -> Manage.
+        Executes the cyclical tracking chain: Prediction, Association, Update, and Management.
         """
-        # 1. Prediction for all existing tracks
-        for track in self.tracks:
-            track.predict()
+        # 1. State Prediction (A-priori)
+        for track in self.active_tracks:
+            track.predict_next_state()
             
-        # 2. Data Association (GNN using Mahalanobis Distance)
-        unassigned_detections = list(range(len(detections)))
-        unassigned_tracks = list(range(len(self.tracks)))
-        assignments = []
+        # 2. Data Association (Nearest Neighbor GNN)
+        unassigned_det_indices = list(range(len(current_detections)))
+        unassigned_track_indices = list(range(len(self.active_tracks)))
+        track_to_det_assignments = []
         
-        if self.tracks and detections:
-            # Build cost matrix (Mahalanobis Distance)
-            costs = np.zeros((len(self.tracks), len(detections)))
-            for i, track in enumerate(self.tracks):
-                for j, det in enumerate(detections):
-                    costs[i, j] = track.kf.mahalanobis_distance(np.array(det))
+        if self.active_tracks and current_detections:
+            # Construct Cost Matrix using Mahalanobis Distance
+            cost_matrix = np.zeros((len(self.active_tracks), len(current_detections)))
+            for i, track in enumerate(self.active_tracks):
+                for j, det in enumerate(current_detections):
+                    cost_matrix[i, j] = track.state_estimator.calculate_mahalanobis_distance(np.array(det))
             
-            # GNN optimal assignment (Greedy approach for real-time performance)
-            while unassigned_tracks and unassigned_detections:
-                i_min, j_min = np.unravel_index(np.argmin(costs, axis=None), costs.shape)
-                min_cost = costs[i_min, j_min]
+            # Greedy Association (Efficient for real-time dense environments)
+            while unassigned_track_indices and unassigned_det_indices:
+                min_flat_idx = np.argmin(cost_matrix)
+                i_min, j_min = np.unravel_index(min_flat_idx, cost_matrix.shape)
+                cost_value = cost_matrix[i_min, j_min]
                 
-                if min_cost < self.association_gate:
-                    assignments.append((i_min, j_min))
-                    costs[i_min, :] = np.inf
-                    costs[:, j_min] = np.inf
-                    unassigned_tracks.remove(i_min)
-                    unassigned_detections.remove(j_min)
+                if cost_value < self.association_gate_sigma:
+                    track_to_det_assignments.append((i_min, j_min))
+                    # Mask the assigned row and column
+                    cost_matrix[i_min, :] = np.inf
+                    cost_matrix[:, j_min] = np.inf
+                    unassigned_track_indices.remove(i_min)
+                    unassigned_det_indices.remove(j_min)
                 else:
-                    break # Gate exceeded
+                    break # No more detections within the gated region
                     
-        # 3. Update assigned tracks
-        for track_idx, det_idx in assignments:
-            self.tracks[track_idx].update(np.array(detections[det_idx]))
+        # 3. Correct Assigned Tracks with New Measurements
+        for track_idx, det_idx in track_to_det_assignments:
+            self.active_tracks[track_idx].synchronize_with_measurement(np.array(current_detections[det_idx]))
             
-        # 4. Handle missed detections (Coasting/Deletion)
-        for track_idx in unassigned_tracks:
-            self.tracks[track_idx].mark_miss()
+        # 4. Process Missed Tracks (Coasting)
+        for track_idx in unassigned_track_indices:
+            self.active_tracks[track_idx].handle_missed_detection()
             
-        # 5. Handle new detections (Provisional initiation)
-        for det_idx in unassigned_detections:
-            new_track = RadarTrack(self.next_id, np.array(detections[det_idx]), self.dt, self.max_coast_frames)
-            self.tracks.append(new_track)
-            self.next_id += 1
+        # 5. Initialize New Tracks (Provisional Initiation)
+        for det_idx in unassigned_det_indices:
+            new_entity = KinematicTrack(self.global_track_id_counter, 
+                                       np.array(current_detections[det_idx]), 
+                                       self.dt, 
+                                       self.max_coast_interval)
+            self.active_tracks.append(new_entity)
+            self.global_track_id_counter += 1
             
-        # 6. Cleanup
-        self.tracks = [t for t in self.tracks if t.active]
-        if len(self.tracks) > 50: # HARD LIMIT to prevent lag in extreme scenarios
-            self.tracks = sorted(self.tracks, key=lambda x: x.hits, reverse=True)[:50]
+        # 6. Inventory Pruning
+        self.active_tracks = [t for t in self.active_tracks if t.is_active]
         
-        # 7. Format Output Summary
+        # Scalability constraint: Keep at most 50 highest-confidence tracks
+        if len(self.active_tracks) > 50:
+            self.active_tracks = sorted(self.active_tracks, key=lambda x: x.total_detections_count, reverse=True)[:50]
+        
+        # 7. Generate Output Telemetry
         return [
                 {
                     "id": t.track_id,
-                    "state": t.state.name,
-                    "range_m": float(t.kf.x[0]),
-                    "velocity_m_s": float(t.kf.x[1]),
-                    "acceleration_m_s2": float(t.kf.x[2]),
-                    "confidence": self._calculate_confidence(t),
-                    "age": t.age
+                    "tactical_state": t.current_state.name,
+                    "estimated_range_m": float(t.state_estimator.state_vector[0]),
+                    "estimated_velocity_ms": float(t.state_estimator.state_vector[1]),
+                    "estimated_acceleration_ms2": float(t.state_estimator.state_vector[2]),
+                    "track_confidence_score": self._estimate_track_confidence(t),
+                    "track_life_frames": t.track_age_frames
                 }
-                for t in self.tracks if t.state in [TrackState.CONFIRMED, TrackState.COASTING]
+                for t in self.active_tracks if t.current_state in [TacticalTrackState.CONFIRMED, TacticalTrackState.COASTING]
             ]
 
-    def _calculate_confidence(self, track: RadarTrack) -> float:
-        """Heuristic confidence based on hits and state."""
-        if track.state == TrackState.CONFIRMED:
-            base = 0.9
-        elif track.state == TrackState.COASTING:
-            base = 0.5 - (track.consecutive_misses * 0.05)
+    def _estimate_track_confidence(self, track: KinematicTrack) -> float:
+        """Heuristic calculation of track viability."""
+        if track.current_state == TacticalTrackState.CONFIRMED:
+            base_score = 0.9
+        elif track.current_state == TacticalTrackState.COASTING:
+            base_score = 0.5 - (track.coasting_frame_count * 0.05)
         else:
-            base = 0.3
+            base_score = 0.3
             
-        # Boost based on longevity
-        boost = min(0.1, track.hits * 0.01)
-        return float(np.clip(base + boost, 0.1, 0.99))
+        # Longevity bonus (Credit for persistent tracks)
+        longevity_bonus = min(0.1, track.total_detections_count * 0.01)
+        return float(np.clip(base_score + longevity_bonus, 0.1, 0.99))

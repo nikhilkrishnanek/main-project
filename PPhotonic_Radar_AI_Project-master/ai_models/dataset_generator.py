@@ -1,164 +1,162 @@
 """
-Synthetic Radar Dataset Generator
-=================================
+Multimodal Synthetic Radar Dataset Generator
+============================================
 
-This module generates large-scale synthetic datasets for training 
-Radar AI models. It leverages the photonic and signal_processing layers 
-to create physically realistic samples.
+This module orchestrates the generation of high-fidelity synthetic radar data 
+for training tactical intelligence models. It utilizes underlying physics 
+models for micro-Doppler, JEM, and stochastic clutter to create 
+multi-modal samples including:
+1. Range-Doppler Intensity Maps (Spatial-Spectral)
+2. Micro-Doppler Spectrograms (Temporal-Frequency)
+3. Raw Pulse/Kinematic Streams (Temporal IQ)
 
-Classes:
-- Drone: High micro-Doppler variance.
-- Aircraft: Large RCS, steady trajectory.
-- Missile: High velocity, low micro-Doppler.
-- Noise: Thermal/Clutter background.
+Tactical Classes:
+-----------------
+- Drone: Hexacopter/Quadcopter models with multiple rotor modulation sidebands.
+- Aircraft: Large RCS fixed-wing platforms with Jet Engine Modulation (JEM).
+- Missile: High-hypersonic profiles with significant Doppler drift and acceleration.
+- Bird: Low-RCS biological targets with erratic flapping amplitude modulation.
+- Noise: Stochastic background (AWGN) and heavy-tailed radar clutter.
 
-Author: Radar AI Engineer
+Author: Senior AI Research Scientist (Radar Physics)
 """
 
 import numpy as np
 import os
 import torch
 from typing import Tuple, List, Dict
-from photonic.signals import generate_photonic_signal
+from photonic.signals import generate_synthetic_photonic_signal
 from signal_processing.transforms import compute_range_doppler_map, compute_spectrogram
-from signal_processing.noise import add_awgn, generate_clutter
+from signal_processing.noise import inject_thermal_awgn, generate_stochastic_clutter
+from ai_models.model import get_tactical_classes
+
 
 class RadarDatasetGenerator:
-    def __init__(self, config: Dict):
-        self.config = config
-        self.classes = ["drone", "aircraft", "missile", "bird", "noise"]
+    """
+    Orchestration engine for synthetic tactical radar data synthesis.
+    """
+    def __init__(self, simulation_config: Dict):
+        self.config = simulation_config
+        self.target_labels = get_tactical_classes()
         
-    def generate_sample(self, target_class: str) -> Dict[str, np.ndarray]:
+    def synthesize_multimodal_sample(self, tactical_class_name: str) -> Dict[str, np.ndarray]:
         """
-        Generates a physically realistic multi-modal sample.
-        Includes complex modulation for Micro-Doppler and tactical noise.
+        Synthesizes a single high-fidelity tactical radar sample.
         """
-        duration = self.config.get('duration', 0.1)
-        fs = self.config.get('fs', 5e5)
-        n_samples = int(fs * duration)
-        t = np.arange(n_samples) / fs
+        duration = self.config.get('chirp_duration_s', 0.1)
+        fs = self.config.get('sampling_rate_hz', 5e5)
+        num_samples = int(fs * duration)
+        time_vector = np.arange(num_samples) / fs
         
-        # 1. Physics-based Signal Generation
+        target_class = tactical_class_name.lower()
+        kinematic_params = {}
+        
+        # 1. Physics-Driven Signal Synthesis
         if target_class == "noise":
-            # Tactical Clutter (Sea/Urban mix)
-            signal = generate_clutter(n_samples, distribution='k', shape=1.5, scale=2.0)
+            # Tactical Clutter Modeling (K-distribution for non-Rayleigh sea/urban clutter)
+            signal = generate_stochastic_clutter(num_samples, distribution_type='k', 
+                                              shape_parameter=1.5, scale_parameter=2.0)
         
         elif target_class == "bird":
-            # Biological modulation: Low frequency, erratic amplitude
-            v = np.random.uniform(5, 15)
+            # Biological modulation: 3-10Hz erratic wing flapping AM
+            velocity = np.random.uniform(5, 15)
             flapping_freq = np.random.uniform(3, 10)
-            carrier = np.exp(1j * 2 * np.pi * v * t)
-            # Amplitude modulation for wing flapping
-            am = 0.5 * (1 + 0.6 * np.sin(2 * np.pi * flapping_freq * t))
-            signal = carrier * am
+            carrier_phase = np.exp(1j * 2 * np.pi * velocity * time_vector)
+            amplitude_modulation = 0.5 * (1 + 0.6 * np.sin(2 * np.pi * flapping_freq * time_vector))
+            signal = carrier_phase * amplitude_modulation
             
         else:
-            params = {
+            # Platform-specific kinematic and modulation parameters
+            platform_registry = {
                 "drone": {"v": 15, "rcs": -15, "rotors": 4, "rpm": 15000, "blade_len": 0.15},
                 "aircraft": {"v": 250, "rcs": 25, "jem_blades": 32, "jem_rpm": 8000},
                 "missile": {"v_start": 400, "accel": 150, "rcs": 5}
-            }[target_class]
+            }
+            kinematic_params = platform_registry[target_class]
             
             if target_class == "drone":
-                # Multi-rotor simulation with multiple blade harmonics
-                v_actual = params["v"] + np.random.normal(0, 3)
-                carrier = np.exp(1j * 2 * np.pi * v_actual * t)
+                # Multi-rotor simulation with blade-tip phase modulation
+                actual_velocity = kinematic_params["v"] + np.random.normal(0, 3)
+                carrier = np.exp(1j * 2 * np.pi * actual_velocity * time_vector)
                 
-                md_signal = np.zeros(n_samples, dtype=complex)
-                for _ in range(params["rotors"]):
-                    rpm = params["rpm"] + np.random.normal(0, 1000)
-                    fm = rpm / 60.0 # modulation freq
-                    # Phase modulation depth proportional to blade length/wavelength
-                    # lambda = 3cm @ 10GHz
-                    beta = (2 * np.pi * params["blade_len"]) / 0.03
-                    # Drone signature often has multiple harmonics (blade edges)
-                    md_signal += np.exp(1j * beta * np.sin(2 * np.pi * fm * t))
-                    md_signal += 0.3 * np.exp(1j * 2 * beta * np.sin(2 * np.pi * fm * t))
+                micro_doppler_modulation = np.zeros(num_samples, dtype=complex)
+                for _ in range(kinematic_params["rotors"]):
+                    rotor_rpm = kinematic_params["rpm"] + np.random.normal(0, 1000)
+                    fm = rotor_rpm / 60.0
+                    # Phase modulation depth (beta) based on blade length and wavelength
+                    beta = (2 * np.pi * kinematic_params["blade_len"]) / 0.03
+                    micro_doppler_modulation += np.exp(1j * beta * np.sin(2 * np.pi * fm * time_vector))
                 
-                signal = carrier * (md_signal / params["rotors"])
+                signal = carrier * (micro_doppler_modulation / kinematic_params["rotors"])
                 
             elif target_class == "aircraft":
-                # Jet Engine Modulation (JEM)
-                # JEM is the chopping of the radar signal by turbine blades
-                v_actual = params["v"] + np.random.normal(0, 5)
-                carrier = np.exp(1j * 2 * np.pi * v_actual * t)
+                # Jet Engine Modulation (JEM) sideband simulation
+                actual_velocity = kinematic_params["v"] + np.random.normal(0, 5)
+                carrier = np.exp(1j * 2 * np.pi * actual_velocity * time_vector)
                 
-                # JEM frequency = N_blades * RPM / 60
-                jem_freq = params["jem_blades"] * params["jem_rpm"] / 60.0
-                # JEM typically appears as sidebands in the spectrum
-                jem_modulation = 1 + 0.2 * np.cos(2 * np.pi * jem_freq * t)
-                signal = carrier * jem_modulation
+                jem_frequency = kinematic_params["jem_blades"] * kinematic_params["jem_rpm"] / 60.0
+                jem_sideband_modulation = 1 + 0.2 * np.cos(2 * np.pi * jem_frequency * time_vector)
+                signal = carrier * jem_sideband_modulation
                 
             elif target_class == "missile":
-                # High speed with linear acceleration (Doppler drift)
-                v0 = params["v_start"] + np.random.normal(0, 50)
-                a = params["accel"] + np.random.normal(0, 20)
-                # Phase is integral of freq: phi = 2pi * integral( v/lambda dt )
-                # lambda = 0.03m
-                # v(t) = v0 + a*t
-                # phi(t) = 2pi * (v0*t + 0.5*a*t^2) / lambda
-                phase = (2 * np.pi / 0.03) * (v0 * t + 0.5 * a * t**2)
-                signal = np.exp(1j * phase)
+                # High-speed kinematic profile with linear radial acceleration (Doppler drift)
+                v0 = kinematic_params["v_start"] + np.random.normal(0, 50)
+                acceleration = kinematic_params["accel"] + np.random.normal(0, 20)
+                wavelength = 0.03 # 10 GHz
+                
+                # Integrated phase for acceleration: phi(t) = 2pi * (v0*t + 0.5*a*t^2) / lambda
+                phase_path = (2 * np.pi / wavelength) * (v0 * time_vector + 0.5 * acceleration * time_vector**2)
+                signal = np.exp(1j * phase_path)
 
-        # 2. Photonic Noise Integration (WDM/MDM Crosstalk simulation)
-        # We simulate the effects of optical nonlinearities and crosstalk
-        snr = np.random.uniform(5, 30)
-        signal = add_awgn(signal, snr_db=snr)
+        # 2. Adaptive Noise Injection (Signal-to-Noise Floor Calibration)
+        target_snr = np.random.uniform(5, 30)
+        signal = inject_thermal_awgn(signal, target_snr_db=target_snr)
         
-        # Add a subtle "channel hum" representing MDM crosstalk
-        hum_freq = 50.0 # Hz
-        signal += 0.01 * np.exp(1j * 2 * np.pi * hum_freq * t)
-
-        # 3. Feature Extraction
-        # Range-Doppler Tensor (Spatial)
-        rd_map = compute_range_doppler_map(signal, n_chirps=64, samples_per_chirp=n_samples//64)
+        # 3. Multimodal Tactical Feature Extraction
+        # Spatial-Spectral Mapping (Range-Doppler)
+        # Using 64-pulse coherent processing interval (CPI)
+        spectral_map = compute_range_doppler_map(signal, n_chirps=64, samples_per_chirp=num_samples//64)
         
-        # Spectrogram (Temporal Frequency)
-        spec = compute_spectrogram(signal, fs=fs, nperseg=256, noverlap=128)
+        # Temporal-Frequency Mapping (Spectrogram)
+        temporal_spectrogram = compute_spectrogram(signal, sampling_rate_hz=fs, nperseg=256, noverlap=128)
         
-        # 4. Metadata Enrichment (For XAI and tracking validation)
-        metadata = {
-            "class": target_class,
-            "snr_db": snr,
-            "kinematics": params if target_class not in ["noise", "bird"] else {},
-            "dt": duration
-        }
-        
-        # Sub-sampled IQ for time-series branch
-        ts_points = 512
-        time_series = np.stack([np.real(signal[:ts_points]), np.imag(signal[:ts_points])])
+        # Raw Kinematic Kinematics (I/Q time-series)
+        # Sub-sampled to standard intelligence sequence length
+        sub_samples = 512
+        raw_iq_series = np.stack([np.real(signal[:sub_samples]), np.imag(signal[:sub_samples])])
         
         return {
-            "rd_map": rd_map,
-            "spectrogram": spec,
-            "time_series": time_series,
-            "label": self.classes.index(target_class),
-            "metadata": metadata
+            "spectral_map": spectral_map,
+            "spectrogram": temporal_spectrogram,
+            "kinematic_series": raw_iq_series,
+            "label_index": self.target_labels.index(tactical_class_name),
+            "metadata": {
+                "class": tactical_class_name,
+                "snr_db": target_snr,
+                "kinematic_params": kinematic_params if kinematic_params else {},
+            }
         }
 
     def generate_batch(self, samples_per_class: int = 50) -> Dict[str, torch.Tensor]:
         """
-        Generates a full batch ready for training.
+        Orchestrates the synthesis of a balanced multimodal training batch.
         """
-        all_rd, all_spec, all_ts, all_y = [], [], [], []
+        accumulation_rd = []
+        accumulation_spec = []
+        accumulation_ts = []
+        accumulation_y = []
         
-        for cls in self.classes:
+        for tactical_class in self.target_labels:
             for _ in range(samples_per_class):
-                sample = self.generate_sample(cls)
-                all_rd.append(sample["rd_map"])
-                all_spec.append(sample["spectrogram"])
-                all_ts.append(sample["time_series"])
-                all_y.append(sample["label"])
+                sample = self.synthesize_multimodal_sample(tactical_class)
+                accumulation_rd.append(sample["spectral_map"])
+                accumulation_spec.append(sample["spectrogram"])
+                accumulation_ts.append(sample["kinematic_series"])
+                accumulation_y.append(sample["label_index"])
                 
         return {
-            "rd_maps": torch.tensor(np.array(all_rd), dtype=torch.float32).unsqueeze(1),
-            "spectrograms": torch.tensor(np.array(all_spec), dtype=torch.float32).unsqueeze(1),
-            "time_series": torch.tensor(np.array(all_ts), dtype=torch.float32),
-            "labels": torch.tensor(np.array(all_y), dtype=torch.long)
+            "rd_maps": torch.tensor(np.array(accumulation_rd), dtype=torch.float32).unsqueeze(1),
+            "spectrograms": torch.tensor(np.array(accumulation_spec), dtype=torch.float32).unsqueeze(1),
+            "time_series": torch.tensor(np.array(accumulation_ts), dtype=torch.float32),
+            "labels": torch.tensor(np.array(accumulation_y), dtype=torch.long)
         }
-
-if __name__ == "__main__":
-    cfg = {"duration": 0.05, "fs": 1e5}
-    gen = RadarDatasetGenerator(cfg)
-    batch = gen.generate_batch(5)
-    print(f"Generated batch | RD shape: {batch['rd_maps'].shape} | Labels: {batch['labels']}")

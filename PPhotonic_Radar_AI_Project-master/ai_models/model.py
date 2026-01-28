@@ -1,15 +1,21 @@
 """
-Cognitive Radar AI Module
-=======================
+Radar Intelligence Pipeline: Target Classification & Characterization
+=====================================================================
 
-This module defines the Deep Learning architecture and inference pipeline.
-It implements a Dual-Stream CNN that fuses:
-1. Spatial Features (Range-Doppler Map)
-2. Temporal Features (Spectrogram)
+This module provides the high-level interface for AI-driven target 
+recognition. It encapsulates the deep neural model, preprocessing logic, 
+and post-inference probability calibration.
 
-It provides strict separation between the Model definition and the Inference logic.
+The pipeline is designed for real-time tactical environments, strictly 
+separating model weights and architecture from the execution context.
 
-Author: Senior AI/ML Engineer
+Intelligence Output:
+--------------------
+- Predicted Class Label: Canonical target type (e.g., Drone, Missile).
+- Inference Confidence: Statistical certainty of the classification.
+- Probability Distribution: Full soft-max output for cognitive feedback.
+
+Author: Lead AI/ML Radar Architect
 """
 
 import torch
@@ -18,172 +24,107 @@ import torch.nn.functional as F
 import numpy as np
 from dataclasses import dataclass
 from typing import List, Tuple, Dict, Optional
+from ai_models.architectures import initialize_tactical_model
 
-# --- 1. Model Definition ---
-
-class RadarCNNBranch(nn.Module):
-    """Generic CNN Branch for 2D Radar Images."""
-    def __init__(self, input_channels: int = 1):
-        super().__init__()
-        self.conv1 = nn.Conv2d(input_channels, 16, kernel_size=3, padding=1)
-        self.bn1 = nn.BatchNorm2d(16)
-        self.pool = nn.MaxPool2d(2, 2)
-        
-        self.conv2 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
-        self.bn2 = nn.BatchNorm2d(32)
-        
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
-        self.bn3 = nn.BatchNorm2d(64)
-        
-        # Global Average Pooling to handle variable input sizes somewhat, 
-        # or fixed size. We assume fixed 128x128 input.
-        # 128 -> 64 -> 32 -> 16.
-        # 64 channels * 16 * 16 = 16384 features.
-        
-    def forward(self, x):
-        x = self.pool(F.relu(self.bn1(self.conv1(x))))
-        x = self.pool(F.relu(self.bn2(self.conv2(x))))
-        x = self.pool(F.relu(self.bn3(self.conv3(x))))
-        return x
-
-class DualStreamRadarNet(nn.Module):
-    """
-    Fused Architecture for Micro-Doppler Classification.
-    Inputs:
-        x_rd: Range-Doppler Map (Batch, 1, H, W)
-        x_spec: Spectrogram (Batch, 1, H, W)
-    """
-    def __init__(self, num_classes: int = 4):
-        super().__init__()
-        self.branch_rd = RadarCNNBranch()
-        self.branch_spec = RadarCNNBranch()
-        
-        # Fusion
-        # Flat features from one branch: 64 * 16 * 16 = 16384
-        # Total flat = 32768
-        self.fusion_fc = nn.Linear(32768, 128)
-        self.dropout = nn.Dropout(0.5)
-        self.head = nn.Linear(128, num_classes)
-        
-        # XAI Hooks
-        self.gradients = None
-        
-    def forward(self, x_rd, x_spec):
-        # Feature Extraction
-        f_rd = self.branch_rd(x_rd)
-        f_spec = self.branch_spec(x_spec)
-        
-        # Flatten
-        f_rd_flat = f_rd.view(f_rd.size(0), -1)
-        f_spec_flat = f_spec.view(f_spec.size(0), -1)
-        
-        # Fusion
-        combined = torch.cat((f_rd_flat, f_spec_flat), dim=1)
-        
-        x = F.relu(self.fusion_fc(combined))
-        x = self.dropout(x)
-        logits = self.head(x)
-        
-        return logits
-
-def list_classes() -> List[str]:
-    return ["Drone", "Bird", "Aircraft", "Noise"]
-
-
-# --- 2. Inference Pipeline ---
 
 @dataclass
-class Prediction:
-    predicted_class: str
-    confidence: float
-    probabilities: Dict[str, float]
-    attention_map: Optional[np.ndarray] = None # For XAI
+class IntelligenceOutput:
+    """Standardized vessel/target intelligence report."""
+    tactical_class: str
+    inference_confidence: float
+    class_probabilities: Dict[str, float]
+    attention_weights: Optional[np.ndarray] = None
 
-class ClassifierPipeline:
+
+def get_tactical_classes() -> List[str]:
+    """Returns the set of targets the intelligence model is trained to recognize."""
+    return ["Drone", "Bird", "Aircraft", "Missile", "Noise"]
+
+
+class IntelligencePipeline:
     """
-    Handles preprocessing, inference, and post-processing.
-    Keeps valid state (model weights) separate from execution.
+    Orchestration layer for Radar Artificial Intelligence.
+    Handles data normalization, tensor conversion, and model execution.
     """
-    def __init__(self, model_path: Optional[str] = None):
+    def __init__(self, model_checkpoint_path: Optional[str] = None):
+        """
+        Initializes the intelligence pipeline.
+        
+        Args:
+            model_checkpoint_path: Optional path to serialized PyTorch weights.
+        """
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.classes = list_classes()
-        self.model = DualStreamRadarNet(num_classes=len(self.classes))
+        self.target_labels = get_tactical_classes()
+        
+        # Instantiate standardized tactical classifier
+        self.model = initialize_tactical_model(num_target_classes=len(self.target_labels))
         self.model.to(self.device)
         self.model.eval()
         
-        if model_path:
-            # Load weights if available
+        if model_checkpoint_path:
             try:
-                self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+                self.model.load_state_dict(torch.load(model_checkpoint_path, map_location=self.device))
             except FileNotFoundError:
-                print(f"Warning: Model file {model_path} not found. Using Random Weights.")
+                print(f"[RECON-AI] Warning: Specified checkpoint not found. Operating with heuristic weights.")
 
-    def preprocess(self, img_array: np.ndarray) -> torch.Tensor:
+    def preprocess_spectral_map(self, rd_intensity_map: np.ndarray) -> torch.Tensor:
         """
-        Converts numpy array (H, W) to Tensor (1, 1, 128, 128).
-        Resize/Normalize logic goes here.
+        Prepares 2D Range-Doppler maps for CNN ingestion.
         """
-        # 1. Normalize (Min-Max or Standardization)
-        # Assuming input is log-magnitude dB.
-        # Robust scalar: (x - min) / (max - min)
-        mn = np.min(img_array)
-        mx = np.max(img_array)
-        if mx - mn > 1e-6:
-            norm = (img_array - mn) / (mx - mn)
+        # 1. Normalization (Min-Max Scaling to [0, 1])
+        # Assumes input in dB or linear power
+        val_min = np.min(rd_intensity_map)
+        val_max = np.max(rd_intensity_map)
+        
+        if val_max - val_min > 1e-9:
+            normalized_map = (rd_intensity_map - val_min) / (val_max - val_min)
         else:
-            norm = img_array
+            normalized_map = rd_intensity_map
             
-        # 2. To Tensor
-        tensor = torch.tensor(norm, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
+        # 2. Tensor Conversion & Dimensionality Alignment
+        # (H, W) -> (Batch=1, Channels=1, H, W)
+        tensor = torch.tensor(normalized_map, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
         
-        # 3. Resize (Bilinear)
-        tensor = F.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False)
+        # 3. Spatial Resampling (Bilinear Interpolation)
+        # Standardizes input size to model's receptive field
+        resampled_tensor = F.interpolate(tensor, size=(128, 128), mode='bilinear', align_corners=False)
         
+        return resampled_tensor.to(self.device)
+
+    def preprocess_kinematic_stream(self, doppler_time_series: np.ndarray) -> torch.Tensor:
+        """
+        Prepares 1D Doppler/Kinematic sequences for RNN ingestion.
+        """
+        # Ensure sequence is a float tensor with batch dimension
+        tensor = torch.tensor(doppler_time_series, dtype=torch.float32)
+        if tensor.dim() == 1:
+            tensor = tensor.unsqueeze(0) # Add batch dim
+            
         return tensor.to(self.device)
 
-    def predict(self, rd_map: np.ndarray, spectrogram: np.ndarray) -> Prediction:
+    def infer_tactical_intelligence(self, 
+                                   rd_intensity_map: np.ndarray, 
+                                   doppler_time_series: np.ndarray) -> IntelligenceOutput:
         """
-        Runs inference on a single frame.
+        Executes multimodal inference to classify a radar tactical entity.
         """
-        t_rd = self.preprocess(rd_map)
-        t_spec = self.preprocess(spectrogram)
+        # Pre-processing
+        tensor_map = self.preprocess_spectral_map(rd_intensity_map)
+        tensor_stream = self.preprocess_kinematic_stream(doppler_time_series)
         
         with torch.no_grad():
-            logits = self.model(t_rd, t_spec)
-            probs = F.softmax(logits, dim=1).cpu().numpy()[0]
+            # Dual-path forward pass
+            logits, attention_weights = self.model(tensor_map, tensor_stream)
             
-        top_idx = np.argmax(probs)
-        prob_dict = {cls: float(p) for cls, p in zip(self.classes, probs)}
+            # Probability calibration
+            soft_probabilities = F.softmax(logits, dim=1).cpu().numpy()[0]
+            
+        prediction_idx = np.argmax(soft_probabilities)
+        probability_map = {label: float(p) for label, p in zip(self.target_labels, soft_probabilities)}
         
-        return Prediction(
-            predicted_class=self.classes[top_idx],
-            confidence=float(probs[top_idx]),
-            probabilities=prob_dict,
-            attention_map=None # Hook XAI here later
+        return IntelligenceOutput(
+            tactical_class=self.target_labels[prediction_idx],
+            inference_confidence=float(soft_probabilities[prediction_idx]),
+            class_probabilities=probability_map,
+            attention_weights=attention_weights.cpu().numpy() if attention_weights is not None else None
         )
-
-    # --- Future Upgrade Paths ---
-    def upgrade_to_transformer(self):
-        """
-        [HOOK] Placeholder for Vision Transformer (ViT) backbone.
-        Suggested: Replace RadarCNNBranch with a Multi-Head Attention block.
-        """
-        pass
-
-    def enable_reinforcement_learning(self):
-        """
-        [HOOK] Placeholder for Cognitive Feedback loop.
-        Integrate with an RL Agent to adaptively change Radar parameters (BW, fc)
-        based on classification confidence scores.
-        """
-        pass
-
-if __name__ == "__main__":
-    # Smoke Test
-    pipeline = ClassifierPipeline()
-    dummy_rd = np.random.randn(200, 64) # Random sizes
-    dummy_spec = np.random.randn(256, 128)
-    
-    pred = pipeline.predict(dummy_rd, dummy_spec)
-    print(f"Prediction: {pred.predicted_class} ({pred.confidence:.2%})")
-    print(f"Probs: {pred.probabilities}")

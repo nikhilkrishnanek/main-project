@@ -281,63 +281,63 @@ class CognitiveRadarEngine:
         # ========== DECISION 1: TRANSMIT POWER ==========
         if avg_conf < self.CONFIDENCE_THRESHOLD_LOW:
             cmd.tx_power_scaling = 1.5  # Increase 50%
-            cmd.reasoning['tx_power'] = \
+            cmd.reasoning['tx_power_scaling'] = \
                 f"Low classification confidence ({avg_conf:.1%}): boost TX power for weak target SNR"
         elif track_stability > 0.9 and snr_db > 20:
             cmd.tx_power_scaling = 0.8  # Reduce 20%
-            cmd.reasoning['tx_power'] = \
+            cmd.reasoning['tx_power_scaling'] = \
                 f"Stable tracks ({track_stability:.2f}) + high SNR ({snr_db:.1f} dB): reduce power for efficiency"
         else:
             cmd.tx_power_scaling = 1.0
-            cmd.reasoning['tx_power'] = "Nominal operating point"
+            cmd.reasoning['tx_power_scaling'] = "Nominal operating point"
         
         # ========== DECISION 2: CHIRP BANDWIDTH ==========
         if scene == SceneType.CLUTTERED:
             cmd.bandwidth_scaling = 1.3  # Expand 30%
-            cmd.reasoning['bandwidth'] = \
+            cmd.reasoning['bandwidth_scaling'] = \
                 f"Cluttered scene (clutter ratio {clutter_ratio:.1%}): expand BW for range resolution"
         elif scene == SceneType.DENSE:
             cmd.bandwidth_scaling = 1.2  # Expand 20%
-            cmd.reasoning['bandwidth'] = \
+            cmd.reasoning['bandwidth_scaling'] = \
                 "Dense targets (swarm): expand BW to separate closely-spaced targets"
         else:
             cmd.bandwidth_scaling = 1.0
-            cmd.reasoning['bandwidth'] = "Standard range resolution"
+            cmd.reasoning['bandwidth_scaling'] = "Standard range resolution"
         
         # ========== DECISION 3: CFAR THRESHOLD SCALING ==========
         if avg_conf > self.CONFIDENCE_THRESHOLD_HIGH:
             cmd.cfar_alpha_scale = 0.9  # Tighten by 10%
-            cmd.reasoning['cfar_alpha'] = \
+            cmd.reasoning['cfar_alpha_scale'] = \
                 f"High classification confidence ({avg_conf:.1%}): aggressive detection enabled"
         elif scene == SceneType.CLUTTERED:
             cmd.cfar_alpha_scale = 1.2  # Relax by 20%
-            cmd.reasoning['cfar_alpha'] = \
+            cmd.reasoning['cfar_alpha_scale'] = \
                 "Clutter-rich environment: conservative threshold to avoid false alarms"
         else:
             cmd.cfar_alpha_scale = 1.0
-            cmd.reasoning['cfar_alpha'] = "Standard CFAR threshold"
+            cmd.reasoning['cfar_alpha_scale'] = "Standard CFAR threshold"
         
         # ========== DECISION 4: COHERENT DWELL TIME ==========
         if track_stability < self.TRACK_STABILITY_THRESHOLD:
             cmd.dwell_time_scale = 1.5  # Extend 50%
-            cmd.reasoning['dwell_time'] = \
+            cmd.reasoning['dwell_time_scale'] = \
                 f"Unstable tracks ({track_stability:.2f}): extend coherent integration time for SNR"
         elif track_stability > 0.85:
             cmd.dwell_time_scale = 0.95  # Slight reduction for efficiency
-            cmd.reasoning['dwell_time'] = "Stable tracks: nominal dwell time"
+            cmd.reasoning['dwell_time_scale'] = "Stable tracks: nominal dwell time"
         else:
             cmd.dwell_time_scale = 1.0
-            cmd.reasoning['dwell_time'] = "Standard integration time"
+            cmd.reasoning['dwell_time_scale'] = "Standard integration time"
         
         # ========== DECISION 5: PRF ADJUSTMENT ==========
         if assessment.mean_velocity_spread > self.VELOCITY_SPREAD_THRESHOLD:
             cmd.prf_scale = 0.9  # Reduce PRF by 10%
-            cmd.reasoning['prf'] = \
+            cmd.reasoning['prf_scale'] = \
                 f"High velocity spread ({assessment.mean_velocity_spread:.1f} m/s): " \
                 "reduce PRF to widen Doppler unambiguous range"
         else:
             cmd.prf_scale = 1.0
-            cmd.reasoning['prf'] = "Standard PRF"
+            cmd.reasoning['prf_scale'] = "Standard PRF"
         
         # ========== Apply Bounded Scaling ==========
         cmd = self._apply_bounds(cmd)
@@ -494,23 +494,24 @@ def extract_track_metrics(tracks: List[Dict]) -> Tuple[float, float, List[float]
 
 def create_track_dict_for_cognitive(track) -> Dict:
     """
-    Convert tracking.manager.RadarTrack object to dict for cognitive engine.
+    Convert tracking.manager.KinematicTrack object to dict for cognitive engine.
     
     Args:
-        track: RadarTrack object
+        track: KinematicTrack object
         
     Returns:
         Dict with required cognitive engine fields
     """
-    stability = min(1.0, track.hits / max(track.age, 1))
+    # Stability = hits / age
+    stability = min(1.0, track.total_detections_count / max(track.track_age_frames, 1))
     
     return {
         'track_id': track.track_id,
-        'state': track.state.name,
-        'age': track.age,
-        'hits': track.hits,
-        'consecutive_misses': track.consecutive_misses,
+        'state': track.current_state.name,
+        'age': track.track_age_frames,
+        'hits': track.total_detections_count,
+        'consecutive_misses': track.coasting_frame_count,
         'stability_score': stability,
-        'velocity': float(track.kf.x[1]) if hasattr(track, 'kf') else 0.0,  # v from KF state
-        'range': float(track.kf.x[0]) if hasattr(track, 'kf') else 0.0,  # r from KF state
+        'velocity': float(track.state_estimator.state_vector[1]) if hasattr(track, 'state_estimator') else 0.0,
+        'range': float(track.state_estimator.state_vector[0]) if hasattr(track, 'state_estimator') else 0.0,
     }

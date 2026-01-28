@@ -1,82 +1,103 @@
 """
-Modular Radar Signal Processing Engine
-=====================================
+Modular Radar Digital Signal Processing (DSP) Engine
+====================================================
 
-This module provides an explicit, stage-by-stage radar processing pipeline.
-Separates fast-time and slow-time processing for clarity and research flexibility.
+This module provides an object-oriented interface for the radar signal processing 
+pipeline. It orchestrates the transformation from raw time-domain pulse matrices 
+to multi-dimensional spectral maps, incorporating windowing, FFTs, and temporal 
+integration (NCI).
 
-Pipeline Stages:
-1. Range FFT (Fast-Time)
-2. Doppler FFT (Slow-Time)
-3. 2D Spectral Energy Calculation
-4. Normalization and Log-conversion
+Processing Stages:
+------------------
+1. Fast-Time Matched Filtering/FFT: Range extraction.
+2. Slow-Time FFT: Doppler velocity extraction.
+3. Power Estimation: Conversion from complex-amplitude to power-spectral density (PSD).
+4. Non-Coherent Integration (NCI): Multi-frame averaging to suppress stochastic 
+   noise and enhance target detection sensitivity.
 
-Author: Radar Signal Processing Engineer
+Author: Senior DSP Systems Architect
 """
 
 import numpy as np
 from typing import Dict, Tuple, Optional
-from signal_processing.transforms import apply_window
+from signal_processing.transforms import get_specialized_window
+
 
 class RadarDSPEngine:
+    """
+    Stateful Radar Processor capable of multi-frame integration and 
+    configurable spectral estimation.
+    """
     def __init__(self, config: Dict):
         self.config = config
         self.n_fft_range = config.get('n_fft_range', 512)
         self.n_fft_doppler = config.get('n_fft_doppler', 128)
         self.window_type = config.get('window_type', 'taylor')
 
-    def process_frame(self, pulse_matrix: np.ndarray, accumulate: bool = True) -> np.ndarray:
+    def process_frame(self, pulse_data_matrix: np.ndarray, 
+                      enable_integration: bool = True) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Executes the full Range-Doppler transformation with multi-frame integration.
+        Executes the dual-FFT Range-Doppler processing chain.
         
-        pulse_matrix: shape (num_pulses, samples_per_pulse)
-        accumulate: If True, uses NCI (Temporal Integration) to improve SNR.
+        Args:
+            pulse_data_matrix: (num_pulses, samples_per_pulse) complex baseband data.
+            enable_integration: If True, applies multi-frame NCI.
+            
+        Returns:
+            (intensity_db, power_linear): The processed maps in both scales.
         """
         from signal_processing.integration import FrameAccumulator
         
         if not hasattr(self, 'accumulator'):
+            # Initialize NCI buffer if not present
             self.accumulator = FrameAccumulator(capacity=self.config.get('nci_frames', 5))
             
-        num_pulses, samples = pulse_matrix.shape
+        num_pulses, samples_per_pulse = pulse_data_matrix.shape
         
-        # 1. Fast-Time (Range) Processing
-        # Apply optimal window (Dolph-Chebyshev/Taylor)
-        win_fast = apply_window(np.ones(samples), method=self.window_type)
-        windowed_pulses = pulse_matrix * win_fast[np.newaxis, :]
+        # --- Stage 1: Fast-Time (Range) Processing ---
+        # Generate apodization window to minimize range sidelobes (spectral leakage)
+        range_window = get_specialized_window(samples_per_pulse, method=self.window_type, at=80)
+        windowed_pulses = pulse_data_matrix * range_window[np.newaxis, :]
         
-        # FFT and Power scaling (1/N)
-        range_fft = np.fft.fft(windowed_pulses, n=self.n_fft_range, axis=1) / samples
+        # Execute Range FFT across the fast-time dimension (Axis 1)
+        # Scaling by 1/N preserves average signal energy levels
+        range_spectral_matrix = np.fft.fft(windowed_pulses, n=self.n_fft_range, axis=1) / samples_per_pulse
         
-        # 2. Slow-Time (Doppler) Processing
-        # Apply slow-time windowing
-        win_slow = apply_window(np.ones(num_pulses), method=self.window_type)
-        windowed_doppler = range_fft * win_slow[:, np.newaxis]
+        # --- Stage 2: Slow-Time (Doppler) Processing ---
+        # Apply Doppler windowing to suppress velocity sidelobes
+        doppler_window = get_specialized_window(num_pulses, method=self.window_type, at=60)
+        windowed_doppler = range_spectral_matrix * doppler_window[:, np.newaxis]
         
-        # FFT and Power scaling (1/M)
+        # Execute Doppler FFT across the pulse index dimension (Axis 0)
+        # Centering DC (Zero Doppler) for intuitive visualization
         rd_complex = np.fft.fft(windowed_doppler, n=self.n_fft_doppler, axis=0) / num_pulses
+        rd_centered = np.fft.fftshift(rd_complex, axes=0)
         
-        # Shift zero frequency to center
-        rd_shifted = np.fft.fftshift(rd_complex, axes=0)
+        # --- Stage 3: Power Characteristic Extraction ---
+        # Square-law detection (Linear Power)
+        range_doppler_power_linear = np.abs(rd_centered)**2
         
-        # 3. Power Extraction (Linear domain)
-        rd_linear_power = np.abs(rd_shifted)**2
-        
-        # 4. Multi-Frame Integration (NCI)
-        if accumulate:
-            rd_final_power = self.accumulator.add_frame(rd_linear_power)
+        # --- Stage 4: Non-Coherent Integration (NCI) ---
+        # Averaging power across time frames to increase Signal-to-Noise Ratio (SNR)
+        if enable_integration:
+            integrated_power = self.accumulator.add_frame(range_doppler_power_linear)
         else:
-            rd_final_power = rd_linear_power
+            integrated_power = range_doppler_power_linear
             
-        # 5. Log Transformation (dB)
-        rd_db = 10 * np.log10(rd_final_power + 1e-12)
+        # --- Stage 5: Intensity Normalization (Decibel Scale) ---
+        range_doppler_intensity_db = 10 * np.log10(integrated_power + 1e-12)
         
-        return rd_db, rd_final_power
+        return range_doppler_intensity_db, integrated_power
 
-def create_rd_map_explicit(signal: np.ndarray, num_pulses: int, samples_per_pulse: int, config: Dict) -> np.ndarray:
+
+def compute_tactical_spectral_map(signal_sequence: np.ndarray, 
+                                  num_pulses: int, 
+                                  samples_per_pulse: int, 
+                                  processing_config: Dict) -> Tuple[np.ndarray, np.ndarray]:
     """
-    Convenience wrapper for the explicit RD-FFT pipeline.
+    Procedural wrapper for standard RD processing of serialized pulse streams.
     """
-    engine = RadarDSPEngine(config)
-    # Reshape 1D signal into Pulse Matrix
-    pulse_matrix = signal.reshape(num_pulses, samples_per_pulse)
-    return engine.process_frame(pulse_matrix)
+    dsp_engine = RadarDSPEngine(processing_config)
+    # Reshape 1D serialized byte/float stream into structured Pulse Matrix
+    pulse_data_matrix = signal_sequence.reshape(num_pulses, samples_per_pulse)
+    return dsp_engine.process_frame(pulse_data_matrix)

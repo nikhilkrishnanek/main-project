@@ -1,36 +1,25 @@
 """
-Lightweight photonic radar signal models.
+Photonic Radar Physics & Component Modeling
+===========================================
 
-Features:
-- Laser phase noise (simple Wiener process)
-- Optical heterodyne RF generation (beat of two lasers)
-- Time-delay beamforming jitter (small random time offsets)
-- Coherence loss modeled from temperature drift
+This module provides high-fidelity, yet computationally efficient, analytical models 
+for key microwave photonic components. It serves as the physical backbone for the 
+radar simulation pipeline.
 
-Configurable via `src.config.get_config()` under key `photonic_model` in `config.yaml`.
+Supported Physical Phenomena:
+-----------------------------
+1. Laser Phase Noise: Modeled as a discrete-time Wiener process, representing 
+   phase fluctuations due to spontaneous emission within the laser cavity.
+2. Optical Heterodyne Mixing: Simulations of RF beat-note generation through 
+   square-law photodetection of dual laser sources.
+3. Thermal Coherence Decay: Models the degradation of signal phase stability 
+   due to ambient temperature-induced refractive index drifts.
+4. TTD Jitter (True Time Delay): Fractional delay modeling for photonic beamforming, 
+   accounting for timing jitter in fiber networks.
 
-Deterministic behavior via `seed` parameter.
-
-Equations (inline):
-
-- Laser phase noise (Wiener):
-  $\\phi(t+\\Delta t) = \\phi(t) + \\sqrt{2\\pi \\Delta f}\\,\\sqrt{\\Delta t}\\,N(0,1)$
-  where $\\Delta f$ is laser linewidth in Hz. This integrates white frequency noise to phase.
-
-- Heterodyne RF (optical beat):
-  $s_{RF}(t) = \\mathrm{Re}\\{E_1(t) e^{j\\omega_1 t} + E_2(t) e^{j\\omega_2 t}\\}^2 \\approx A\\cos((\\omega_1-\\omega_2)t + \\phi_1(t)-\\phi_2(t))$
-
-- Time-delay jitter: apply small random delays $\\tau_i \\sim \\mathcal{N}(0,\\sigma_{\\tau}^2)$ per channel to emulate jitter.
-
-- Coherence loss from temperature drift: $\\mathrm{coherence}(t) = \\exp(-|\\Delta T(t)|/T_{\\mathrm{coh}})$
-
-The implementation favors simplicity and speed (NumPy-only); suitable for simulation pipelines.
-
-Example:
->>> from photonic.physics import generate_photonic_rf
->>> t, rf = generate_photonic_rf(duration=0.01, fs=20000, seed=42)
-
+Author: Senior Radar Systems Engineer (MWP Division)
 """
+
 from typing import Optional, Dict, Tuple
 import numpy as np
 
@@ -40,224 +29,155 @@ from photonic_models.transmission import simulate_wdm_channel
 from photonic_models.beamforming import calculate_squint_error
 
 
-def _get_model_cfg() -> Dict:
+def _fetch_physics_config() -> Dict:
+    """Retrieves physics-level hyperparameters from the global configuration."""
     cfg = get_config()
     return cfg.get("photonic_model", {
         "laser_linewidth_hz": 1e3,
-        "optical_freq_hz": 193.414e12,
-        "local_osc_freq_offset_hz": 1e9,
-        "num_channels": 1,
-        "beamjitter_std_ns": 1.0,  # nanoseconds
-        "temp_drift_rate_C_per_s": 0.01,
-        "temp_coherence_scale_C": 5.0,
-        "amplitude": 1.0,
+        "optical_center_freq_hz": 193.414e12, # 1550nm C-Band reference
+        "local_oscillator_offset_hz": 1e9,
+        "beamforming_channels": 1,
+        "delay_jitter_std_ns": 1.0, 
+        "thermal_drift_rate_K_per_s": 0.01,
+        "coherence_temperature_scale_K": 5.0,
+        "amplitude_v": 1.0,
     })
 
 
-def _wiener_phase_noise(linewidth_hz: float, dt: float, n: int, rng: np.random.Generator) -> np.ndarray:
-    """Generate phase noise samples using a discrete Wiener process.
-
-    Phase increment variance per step: Var(dphi) = 2*pi*linewidth * dt
-    dphi = sqrt(2*pi*linewidth*dt) * N(0,1)
+def _generate_wiener_phase_noise(laser_linewidth_hz: float, 
+                                sampling_period_s: float, 
+                                num_samples: int, 
+                                rng: np.random.Generator) -> np.ndarray:
     """
-    sigma = np.sqrt(2.0 * np.pi * linewidth_hz * dt)
-    dphi = rng.normal(scale=sigma, size=n)
-    phi = np.cumsum(dphi)
-    return phi
-
-
-def _temperature_drift(duration: float, fs: float, rate_C_per_s: float) -> np.ndarray:
-    """Simple linear temperature drift plus small low-frequency fluctuations."""
-    t = np.arange(int(np.ceil(duration * fs))) / fs
-    base = rate_C_per_s * t
-    # gentle low-freq sinusoidal variation to emulate diurnal / slow changes
-    fluct = 0.1 * np.sin(2 * np.pi * 0.01 * t)
-    return base + fluct
-
-
-def generate_photonic_rf(duration: float,
-                         fs: float = 1e4,
-                         num_channels: int = 1,
-                         seed: Optional[int] = None,
-                         cfg_override: Optional[Dict] = None) -> Tuple[np.ndarray, np.ndarray]:
+    Synthesizes laser phase noise samples using a discrete Wiener process.
+    
+    The phase variance accumulates linearly with time: Var[phi(t)] = 2 * pi * linewidth * t
     """
-    Generate a lightweight photonic RF signal produced by optical heterodyne and photodetection.
+    phase_step_std = np.sqrt(2.0 * np.pi * laser_linewidth_hz * sampling_period_s)
+    phase_increments = rng.normal(scale=phase_step_std, size=num_samples)
+    return np.cumsum(phase_increments)
 
-    Returns (t, rf_signals) where `rf_signals` shape is (num_channels, samples)
 
-    Parameters:
-    - duration: seconds
-    - fs: sampling frequency (Hz)
-    - num_channels: number of beamforming channels (applies independent jitter)
-    - seed: optional int for deterministic RNG
-    - cfg_override: optional dict to override YAML config values locally
+def _simulate_thermal_environment(duration_s: float, 
+                                  sampling_rate_hz: float, 
+                                  drift_rate_K_per_s: float) -> np.ndarray:
+    """Models slow temperature variations affecting photonic component stability."""
+    time_axis = np.arange(int(np.ceil(duration_s * sampling_rate_hz))) / sampling_rate_hz
+    # Linear drift + diurnal sinusoidal fluctuation
+    thermal_profile = (drift_rate_K_per_s * time_axis) + 0.1 * np.sin(2 * np.pi * 0.01 * time_axis)
+    return thermal_profile
+
+
+def generate_heterodyne_rf_signal(duration_s: float,
+                                  sampling_rate_hz: float = 1e4,
+                                  num_channels: int = 1,
+                                  seed: Optional[int] = None,
+                                  config_override: Optional[Dict] = None) -> Tuple[np.ndarray, np.ndarray]:
     """
-    model_cfg = _get_model_cfg()
-    if cfg_override:
-        model_cfg.update(cfg_override)
+    Generates a photonic RF signal via simulated optical heterodyne detection.
+
+    Args:
+        duration_s: Observation time in seconds.
+        sampling_rate_hz: Sample frequency in Hz.
+        num_channels: Count of independent spatial/beamforming channels.
+        seed: Determinism seed for RNG.
+        config_override: Local override for physics parameters.
+
+    Returns:
+        (time_axis, rf_waveforms): Time vector and multi-channel RF voltage matrix.
+    """
+    physics_cfg = _fetch_physics_config()
+    if config_override:
+        physics_cfg.update(config_override)
 
     rng = np.random.default_rng(seed)
 
-    N = int(np.ceil(duration * fs))
-    t = np.arange(N) / fs
-    dt = 1.0 / fs
+    num_samples = int(np.ceil(duration_s * sampling_rate_hz))
+    time_axis = np.arange(num_samples) / sampling_rate_hz
+    sampling_period_s = 1.0 / sampling_rate_hz
 
-    linewidth = float(model_cfg.get("laser_linewidth_hz", 1e3))
-    opt_freq = float(model_cfg.get("optical_freq_hz", 193.414e12))
-    lo_offset = float(model_cfg.get("local_osc_freq_offset_hz", 1e9))
-    amp = float(model_cfg.get("amplitude", 1.0))
-    beamjitter_ns = float(model_cfg.get("beamjitter_std_ns", 1.0))
-    temp_rate = float(model_cfg.get("temp_drift_rate_C_per_s", 0.01))
-    temp_scale = float(model_cfg.get("temp_coherence_scale_C", 5.0))
+    # Parameter Extraction
+    linewidth = float(physics_cfg.get("laser_linewidth_hz", 1e3))
+    lo_freq_offset = float(physics_cfg.get("local_oscillator_offset_hz", 1e9))
+    amplitude = float(physics_cfg.get("amplitude_v", 1.0))
+    jitter_ns = float(physics_cfg.get("delay_jitter_std_ns", 1.0))
     
-    # FMCW Parameters
-    fmcw_bw = float(model_cfg.get("fmcw_bandwidth_hz", 0.0))
-    fmcw_period = float(model_cfg.get("fmcw_chirp_period_s", 1e-3)) # Default 1ms
+    # FMCW Sweep Parameters
+    sweep_bandwidth = float(physics_cfg.get("fmcw_bandwidth_hz", 0.0))
+    chirp_period = float(physics_cfg.get("fmcw_chirp_period_s", 1e-3))
 
-    # Laser phases (two lasers: signal + LO) using Wiener phase noise
-    phi_sig = _wiener_phase_noise(linewidth, dt, N, rng)
-    phi_lo = _wiener_phase_noise(linewidth, dt, N, rng)
+    # 1. Phase Noise Synthesis (Independent Signal/LO Laser Sources)
+    phi_signal_laser = _generate_wiener_phase_noise(linewidth, sampling_period_s, num_samples, rng)
+    phi_local_osc_laser = _generate_wiener_phase_noise(linewidth, sampling_period_s, num_samples, rng)
 
-    # Heterodyne RF generation
-    # Stationary frequency: delta_omega
-    # Chirp: slope * t
-    delta_omega = 2.0 * np.pi * lo_offset
-    
-    # Phase accumulation for chirp: integral of frequency
-    # freq(t) = start_freq + (BW/T) * t
-    # phase(t) = start_freq*t + 0.5 * (BW/T) * t^2
-    # We add this on top of the LO offset
-    
-    if fmcw_bw > 0 and fmcw_period > 0:
-        # Linear chirp phase
-        # We repeat the chirp every fmcw_period
-        t_mod = np.mod(t, fmcw_period)
-        slope = fmcw_bw / fmcw_period
-        chirp_phase = 2.0 * np.pi * (0.5 * slope * t_mod**2)
+    # 2. FMCW Modulation (Phase Interpolation)
+    if sweep_bandwidth > 0 and chirp_period > 0:
+        time_modulated = np.mod(time_axis, chirp_period)
+        sweep_slope = sweep_bandwidth / chirp_period
+        chirp_phase = 2.0 * np.pi * (0.5 * sweep_slope * time_modulated**2)
     else:
         chirp_phase = 0.0
 
-    rf_phase = delta_omega * t + chirp_phase + (phi_sig - phi_lo)
+    # 3. RF Beat-note Construction
+    # Phase(t) = 2*pi*f_offset*t + Phi_Chirp(t) + [Phi_Sig(t) - Phi_LO(t)]
+    fundamental_phase = (2.0 * np.pi * lo_freq_offset * time_axis) + chirp_phase + (phi_signal_laser - phi_local_osc_laser)
+    raw_rf_voltage = amplitude * np.cos(fundamental_phase)
 
-    base_rf = amp * np.cos(rf_phase)
+    # 4. Thermal Coherence Attenuation
+    # Models SNR degradation as components drift out of thermal equilibrium
+    thermal_profile = _simulate_thermal_environment(duration_s, sampling_rate_hz, 
+                                                   float(physics_cfg.get("thermal_drift_rate_K_per_s", 0.01)))
+    coherence_scale = float(physics_cfg.get("coherence_temperature_scale_K", 5.0))
+    coherence_loss = np.exp(-np.abs(thermal_profile) / max(1e-9, coherence_scale))
+    coherent_rf = raw_rf_voltage * coherence_loss
 
-    # Temperature-driven coherence loss: multiplicative factor in amplitude
-    temp = _temperature_drift(duration, fs, temp_rate)
-    coherence = np.exp(-np.abs(temp) / max(1e-9, temp_scale))
+    # 5. Photonic True Time Delay (TTD) Jitter Modeling
+    channel_waveforms = np.zeros((num_channels, num_samples), dtype=float)
+    delay_method = physics_cfg.get("fractional_delay_method", "sinc").lower()
+    max_jitter_ns = float(physics_cfg.get("fractional_delay_max_ns", 5.0))
 
-    # Apply coherence envelope
-    rf_coherent = base_rf * coherence
+    def _apply_fractional_delay_sinc(signal_in: np.ndarray, 
+                                     delay_s: float, 
+                                     fs_hz: float, 
+                                     window_len: int = 129) -> np.ndarray:
+        """Applies high-fidelity time-shifting using a windowed-sinc interpolator."""
+        delay_samples = delay_s * fs_hz
+        m_half = (window_len - 1) // 2
+        offsets = np.arange(-m_half, m_half + 1)
+        # Sinc kernel calculation
+        sinc_kernel = np.sinc(offsets - delay_samples) * np.hanning(window_len)
+        sinc_kernel /= np.sum(sinc_kernel) # Energy normalization
+        # Convolution and latency compensation
+        y_conv = np.convolve(signal_in, sinc_kernel, mode='full')
+        return y_conv[m_half : m_half + len(signal_in)]
 
-    # Beamforming jitter: support both 'fft' and 'sinc' fractional delay methods
-    signals = np.zeros((num_channels, N), dtype=float)
-    method = model_cfg.get("fractional_delay_method", "sinc").lower()
-    max_ns = float(model_cfg.get("fractional_delay_max_ns", 5.0))
-
-    def _fractional_delay_sinc(x: np.ndarray, tau: float, fs: float, kernel_len: int = 129) -> np.ndarray:
-        """Apply a windowed-sinc fractional delay filter.
-
-        tau: delay in seconds (can be fractional). Positive tau delays the signal.
-        kernel_len: odd length of the sinc kernel (tradeoff fidelity vs cost)
-        """
-        # convert to fractional samples
-        d = tau * fs
-        M = int((kernel_len - 1) // 2)
-        n = np.arange(-M, M + 1)
-        # sinc kernel using numpy.sinc which takes argument x -> sinc(pi*x)/(pi*x) normalized
-        h = np.sinc(n - d)
-        # apply a Hann window for smoother roll-off
-        w = np.hanning(len(h))
-        h *= w
-        # normalize to preserve DC gain
-        h /= np.sum(h)
-        # linear convolution (use 'full' then center-crop to length of x to avoid
-        # numpy behavior where 'same' may return kernel-length when kernel>signal)
-        y_full = np.convolve(x, h, mode='full')
-        L = len(y_full)
-        start = (L - len(x)) // 2
-        y = y_full[start:start + len(x)]
-        return y
-
-    # Precompute FFT components only if needed
-    if method == "fft":
-        S = np.fft.rfft(rf_coherent)
-        freqs = np.fft.rfftfreq(N, d=dt)  # Hz
-        omega = 2.0 * np.pi * freqs
+    # Pre-compute FFT if using frequency-domain delay
+    if delay_method == "fft":
+        spectrum = np.fft.rfft(coherent_rf)
+        angular_freqs = 2.0 * np.pi * np.fft.rfftfreq(num_samples, d=sampling_period_s)
 
     for ch in range(num_channels):
-        # jitter in seconds (clamped)
-        tau_ns = rng.normal(loc=0.0, scale=beamjitter_ns)
-        tau_ns = np.clip(tau_ns, -max_ns, max_ns)
-        tau = float(tau_ns) * 1e-9
+        # Sample random jitter per channel
+        tau_jitter_ns = np.clip(rng.normal(0, jitter_ns), -max_jitter_ns, max_jitter_ns)
+        tau_jitter_s = float(tau_jitter_ns) * 1e-9
 
-        if method == "fft":
-            phase_ramp = np.exp(-1j * omega * tau)
-            S_shifted = S * phase_ramp
-            shifted = np.fft.irfft(S_shifted, n=N)
+        if delay_method == "fft":
+            phase_shift = np.exp(-1j * angular_freqs * tau_jitter_s)
+            channel_waveforms[ch] = np.fft.irfft(spectrum * phase_shift, n=num_samples)
         else:
-            # default to windowed-sinc fractional delay in time-domain
-            shifted = _fractional_delay_sinc(rf_coherent, tau, fs, kernel_len=129)
+            channel_waveforms[ch] = _apply_fractional_delay_sinc(coherent_rf, tau_jitter_s, sampling_rate_hz)
 
-        # small additional per-sample multiplicative jitter to emulate amplitude jitter
-        per_sample_jitter = rng.normal(loc=1.0, scale=0.001, size=N)
-        signals[ch] = shifted * per_sample_jitter
+        # Micro-amplitude jitter (Residual Intensity Noise - RIN proxy)
+        channel_waveforms[ch] *= rng.normal(1.0, 0.001, size=num_samples)
 
-    return t, signals
+    return time_axis, channel_waveforms
 
 
-def example_usage():
-    """Simple smoke test when run as a script."""
-    t, s = generate_photonic_rf(duration=0.01, fs=20000, num_channels=4, seed=1234)
-    print("Generated", s.shape, "samples")
+def run_physics_demo():
+    """Simple diagnostic script for physics engine validation."""
+    time, sigs = generate_heterodyne_rf_signal(duration_s=0.01, sampling_rate_hz=20000, num_channels=2, seed=42)
+    print(f"[PHYSICS-CORE] Generated {sigs.shape} waveforms. RMS: {np.sqrt(np.mean(sigs**2)):.4e}")
 
-
-def generate_photonic_research_signal(
-    duration: float,
-    fs: float = 1e10, 
-    num_lines: int = 8,
-    spacing_ghz: float = 25.0,
-    seed: Optional[int] = None
-) -> Dict:
-    """
-    Advanced Research-Grade Signal Generation.
-    Models an Optical Frequency Comb (OFC) based multi-band radar source.
-    """
-    rng = np.random.default_rng(seed)
-    
-    # 1. OFC Generation (Multi-wavelength Source)
-    t, e_comb = generate_flat_comb(
-        n_lines=num_lines,
-        spacing_hz=spacing_ghz * 1e9,
-        center_freq_hz=193.1e12,
-        fs=fs,
-        duration=duration
-    )
-    
-    # 2. WDM/MDM Multi-band Abstraction
-    bands = []
-    for n in range(num_lines):
-        band_sig = e_comb * np.exp(1j * rng.uniform(0, 2*np.pi))
-        bands.append(band_sig)
-        
-    wdm_output = simulate_wdm_channel(bands, spacing_ghz * 1e9, fiber_length_km=10.0)
-    
-    # 3. Phased Array vs TTD (Photonic Advantage)
-    f_center = 10e9
-    f_edge = 14e9 
-    squint_electronic = calculate_squint_error(theta_boresight=10.0, f_center=f_center, f_edge=f_edge)
-    
-    return {
-        "time": t,
-        "optical_envelope": e_comb,
-        "wdm_bands": wdm_output,
-        "metrics": {
-            "num_coherent_lines": num_lines,
-            "line_spacing_ghz": spacing_ghz,
-            "electronic_squint_deg": squint_electronic,
-            "photonic_squint_deg": 0.0, 
-            "bandwidth_potential_thz": float(num_lines * spacing_ghz / 1000)
-        }
-    }
 
 if __name__ == "__main__":
-    example_usage()
+    run_physics_demo()

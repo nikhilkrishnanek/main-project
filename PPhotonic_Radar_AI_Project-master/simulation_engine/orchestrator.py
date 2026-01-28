@@ -18,11 +18,11 @@ import numpy as np
 from typing import List, Dict
 from simulation_engine.physics import TargetState, KinematicEngine
 from simulation_engine.performance import PerformanceMonitor
-from photonic.signals import generate_photonic_signal
+from photonic.signals import generate_synthetic_photonic_signal
 from signal_processing.engine import RadarDSPEngine
-from signal_processing.detection import ca_cfar
-from ai_models.architectures import HybridRadarNet
-from tracking.manager import TrackManager
+from signal_processing.detection import ca_cfar_detector, cluster_and_centroid_detections
+from ai_models.architectures import TacticalHybridClassifier, initialize_tactical_model
+from tracking.manager import TacticalTrackManager
 from simulation_engine.evaluation import EvaluationManager
 import torch
 import torch.nn.functional as F
@@ -33,11 +33,11 @@ class SimulationOrchestrator:
         self.dt = radar_config.get('frame_dt', 0.1)
         self.physics = KinematicEngine(self.dt)
         self.dsp = RadarDSPEngine(radar_config)
-        self.tracker = TrackManager(dt=self.dt)
+        self.tracker = TacticalTrackManager(sampling_period_s=self.dt)
         self.perf = PerformanceMonitor()
         
         # AI Logic
-        self.ai_model = HybridRadarNet(num_classes=5)
+        self.ai_model = initialize_tactical_model(num_target_classes=5)
         self.ai_model.eval()
         # Mock class labels
         self.class_labels = {0: "Noise", 1: "Drone", 2: "Bird", 3: "Aircraft", 4: "Missile"}
@@ -112,25 +112,23 @@ class SimulationOrchestrator:
         
         # 3. Photonic Signal Generation (Analytic De-chirped)
         self.perf.start_phase("photonic")
-        fs = self.config.get('fs', 2e6)
-        n_pulses = self.config.get('n_pulses', 64)
+        sampling_rate_hz = self.config.get('sampling_rate_hz', 2e6)
+        num_pulses = self.config.get('n_pulses', 64)
         samples_per_pulse = self.config.get('samples_per_pulse', 512)
         
-        c = 3e8
-        fc = self.config.get('f_start', 77e9) # Carrier (e.g. 77GHz)
-        bw = self.config.get('bandwidth', 150e6) # Bandwidth
-        duration = samples_per_pulse / fs
-        slope = bw / duration
+        speed_of_light = 3e8
+        carrier_freq_hz = self.config.get('start_frequency_hz', 77e9) 
+        sweep_bandwidth_hz = self.config.get('sweep_bandwidth_hz', 150e6)
+        chirp_duration_s = samples_per_pulse / sampling_rate_hz
+        chirp_slope_hz_s = sweep_bandwidth_hz / chirp_duration_s
         
-        total_samples = n_pulses * samples_per_pulse
-        t = np.arange(total_samples) / fs
+        total_samples = num_pulses * samples_per_pulse
+        time_vector = np.arange(total_samples) / sampling_rate_hz
         beat_signal = np.zeros(total_samples, dtype=complex)
         
-        # Helper: Pulse time vector for phase reset if needed?
-        # Usually for FMCW, phase is continuous or resets per chirp. 
-        # Standard processing assumes reset.
-        t_pulse = np.arange(samples_per_pulse) / fs
-        t_matrix = np.tile(t_pulse, n_pulses)
+        # Helper: Pulse time vector for phase reset if needed
+        t_pulse = np.arange(samples_per_pulse) / sampling_rate_hz
+        t_matrix = np.tile(t_pulse, num_pulses)
         
         if illuminated_targets:
             for tgt in illuminated_targets:
@@ -138,9 +136,9 @@ class SimulationOrchestrator:
                 v = tgt.radial_velocity
                 
                 # Physics:
-                tau = 2 * r / c
-                f_beat = slope * tau  # Range Frequency
-                f_dopp = (2 * v * fc) / c  # Doppler Frequency
+                propagation_delay_tau = 2 * r / speed_of_light
+                beat_frequency_hz = chirp_slope_hz_s * propagation_delay_tau
+                doppler_frequency_hz = (2 * v * carrier_freq_hz) / speed_of_light
                 
                 # Phase: 2*pi*(fb + fd)*t + Phase_offset
                 # Important: t must be local to pulse for Range term?
@@ -149,21 +147,15 @@ class SimulationOrchestrator:
                 # The term 't' here resets every pulse for the S*tau part?
                 # Yes, S*t is freq offset from current chirp start.
                 
-                freq = f_beat + f_dopp
-                phase_const = 2 * np.pi * fc * tau # Range phase term (precise)
+                total_phase = 2 * np.pi * carrier_freq_hz * propagation_delay_tau
                 
-                # Amplitude (Radar Equation placeholder)
-                amp = 1.0 / (r**2 + 1.0) * 1e5 #(Simple scaling)
+                # Amplitude (Radar Equation scaling)
+                amplitude = 1.0 / (r**2 + 1.0) * 1e5
                 
                 # Generate Tone
-                # Using t_matrix ensures chirp-relative time for beat freq
-                # But Doppler is coherent across pulses (slow time t)
-                # Correction: Range term depends on fast-time, Doppler on slow-time (or total time).
-                # Accurate: exp(j*2*pi * f_beat * t_fast) * exp(j*2*pi * f_dopp * t_total)
-                
-                tone = amp * np.exp(1j * 2 * np.pi * f_beat * t_matrix) * \
-                       np.exp(1j * 2 * np.pi * f_dopp * t) * \
-                       np.exp(1j * phase_const)
+                tone = amplitude * np.exp(1j * 2 * np.pi * beat_frequency_hz * t_matrix) * \
+                       np.exp(1j * 2 * np.pi * doppler_frequency_hz * time_vector) * \
+                       np.exp(1j * total_phase)
                        
                 beat_signal += tone
         
@@ -180,12 +172,11 @@ class SimulationOrchestrator:
         
         # 3. DSP & Detection
         self.perf.start_phase("dsp")
-        pulse_matrix = beat_signal.reshape(n_pulses, samples_per_pulse)
+        pulse_matrix = beat_signal.reshape(num_pulses, samples_per_pulse)
         rd_map, rd_power = self.dsp.process_frame(pulse_matrix) # Unpack dB and Linear maps
-        det_map, _ = ca_cfar(rd_power, min_pwr=0.005) 
+        det_map, _ = ca_cfar_detector(rd_power, power_floor=0.005) 
         
-        from signal_processing.detection import cluster_detections
-        detections = cluster_detections(det_map, rd_power) # Collapse redundant peaks
+        detections = cluster_and_centroid_detections(det_map, rd_power) # Collapse redundant peaks
         
         if self.frame_count % 50 == 0:
             # Periodic debug only
@@ -198,12 +189,12 @@ class SimulationOrchestrator:
         
         # Calculate Resolutions
         n_fft_r = self.dsp.n_fft_range
-        r_scale = (c * samples_per_pulse) / (2 * bw * n_fft_r)
+        r_scale = (speed_of_light * samples_per_pulse) / (2 * sweep_bandwidth_hz * n_fft_r)
         
         # Velocity Res
         n_fft_d = self.dsp.n_fft_doppler
-        lam = c / fc
-        v_scale = lam / (2 * n_pulses * duration * (n_fft_d / n_pulses))
+        wavelength = speed_of_light / carrier_freq_hz
+        v_scale = wavelength / (2 * num_pulses * chirp_duration_s * (n_fft_d / num_pulses))
         
         obs_states = []
         for v_idx, r_idx in detections:
@@ -220,7 +211,7 @@ class SimulationOrchestrator:
             if r > 10: 
                 obs_states.append((r, v))
             
-        tracks = self.tracker.update(obs_states)
+        tracks = self.tracker.update_pipeline(obs_states)
         
         # DEBUG: tracing the data flow
         if self.frame_count % 10 == 0:
@@ -240,7 +231,7 @@ class SimulationOrchestrator:
                 for tr in tracks:
                     # In a real system, we'd crop the ROI per target. 
                     # Here we pass the full scene context + target-specific kinematic time-series.
-                    ts_input = self._prepare_timeseries(tr['velocity_m_s'])
+                    ts_input = self._prepare_timeseries(tr['estimated_velocity_ms'])
                     
                     logits, _ = self.ai_model(spec_batch, ts_input)
                     probs = F.softmax(logits, dim=1)
@@ -261,8 +252,8 @@ class SimulationOrchestrator:
              # Basic transformation for eval matching
              track_dicts.append({
                  'id': tr['id'],
-                 'range_m': tr['range_m'],
-                 'velocity_m_s': tr['velocity_m_s']
+                 'range_m': tr['estimated_range_m'],
+                 'velocity_m_s': tr['estimated_velocity_ms']
              })
              
         # Ground Truth (All targets, even those outside beam, for global tracking eval? 

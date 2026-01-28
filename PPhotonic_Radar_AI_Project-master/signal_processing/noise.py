@@ -1,109 +1,128 @@
 """
-Realistic Radar Noise and Clutter Modeling
-==========================================
+Radar Noise, Clutter, and Electronic Interference Modeling
+==========================================================
 
-This module provides high-fidelity stochastic models for:
-1. AWGN (Additive White Gaussian Noise): Receiver thermal noise.
-2. Clutter: Non-Gaussian statistical models (Weibull, K-distribution) for environmental echoes.
-3. Interference: Narrowband and broadband jamming signals.
+This module provides high-fidelity stochastic models for simulating the 
+complex electromagnetic environments encountered by radar systems.
 
-Author: Radar Signal Processing Expert
+Physical Models:
+----------------
+1. AWGN (Additive White Gaussian Noise): Represents the collective thermal noise 
+   from the antenna and receiver low-noise amplifier (LNA).
+2. Clutter: Unwanted echoes from the environment.
+   - Weibull: Effective for modeling sea clutter at low grazing angles.
+   - K-Distribution: Standard for high-resolution sea and land clutter with 
+     heavy-tailed (non-Rayleigh) characteristics.
+3. Electronic Interference (EA): Models for intentional jamming, including 
+   Spot Jamming (narrowband) and Barrage Jamming (swept/wideband).
+
+Author: Senior Radar Systems Engineer (EM Modeling Division)
 """
 
 import numpy as np
 from typing import Optional
 
-def add_awgn(signal: np.ndarray, snr_db: float) -> np.ndarray:
-    """
-    Adds Additive White Gaussian Noise (AWGN) to the signal.
-    """
-    sig_power = np.mean(np.abs(signal)**2)
-    noise_power = sig_power / (10**(snr_db / 10))
-    
-    # Complex noise for IQ signals
-    noise = np.sqrt(noise_power/2) * (np.random.randn(*signal.shape) + 1j * np.random.randn(*signal.shape))
-    return signal + noise
 
-def generate_clutter(n_samples: int, distribution: str = 'weibull', scenario: str = 'custom', **kwargs) -> np.ndarray:
+def inject_thermal_awgn(signal_complex: np.ndarray, snr_db: float) -> np.ndarray:
     """
-    Generates non-Gaussian radar clutter based on tactical scenarios.
+    Simulates Additive White Gaussian Noise (AWGN) based on a target Signal-to-Noise Ratio.
+    """
+    signal_power = np.mean(np.abs(signal_complex)**2)
+    noise_power_linear = signal_power / (10**(snr_db / 10.0))
     
-    Profiles:
-    - 'urban': High K-factor, dense multipath (K-distribution).
-    - 'sea': Weibull with low shape factor (heavy tails).
-    - 'desert': Low power Gaussian/Rayleigh.
+    # Complex circular symmetric Gaussian noise
+    standard_deviation = np.sqrt(noise_power_linear / 2.0)
+    noise_samples = standard_deviation * (np.random.randn(*signal_complex.shape) + 1j * np.random.randn(*signal_complex.shape))
+    
+    return signal_complex + noise_samples
+
+
+def generate_stochastic_clutter(num_samples: int, 
+                                distribution: str = 'weibull', 
+                                tactical_scenario: str = 'custom', 
+                                **kwargs) -> np.ndarray:
     """
-    if scenario == 'urban':
-        # Dense clutter with high texture
-        return generate_clutter(n_samples, distribution='k', shape=1.2, scale=2.0)
-    elif scenario == 'sea':
-        # Heavy-tailed Weibull for sea spikes
-        return generate_clutter(n_samples, distribution='weibull', shape=0.8, scale=1.5)
-    elif scenario == 'desert':
-        return generate_clutter(n_samples, distribution='gaussian')
+    Synthesizes non-Gaussian radar clutter samples for specific tactical environments.
+    """
+    if tactical_scenario == 'urban':
+        # Dense urban terrain: High texture K-distribution
+        return generate_stochastic_clutter(num_samples, distribution='k', shape=1.2, scale=2.0)
+    elif tactical_scenario == 'maritime':
+        # Sea clutter: Spiky Weibull distribution
+        return generate_stochastic_clutter(num_samples, distribution='weibull', shape=0.7, scale=1.5)
+    elif tactical_scenario == 'arid':
+        # Desert/Flat terrain: Approximates Rayleigh (Gaussian IQ)
+        return generate_stochastic_clutter(num_samples, distribution='gaussian')
         
     if distribution == 'weibull':
-        scale = kwargs.get('scale', 1.0)
-        shape = kwargs.get('shape', 1.5)
-        mag = scale * np.random.weibull(shape, n_samples)
+        # Weibull distribution for magnitude; uniform distribution for phase
+        scale_param = kwargs.get('scale', 1.0)
+        shape_param = kwargs.get('shape', 1.5)
+        clutter_magnitude = scale_param * np.random.weibull(shape_param, num_samples)
     elif distribution == 'k':
-        shape = kwargs.get('shape', 2.0)
-        scale = kwargs.get('scale', 1.0)
-        texture = np.random.gamma(shape, scale, n_samples)
-        speckle = np.sqrt(0.5) * (np.random.randn(n_samples) + 1j * np.random.randn(n_samples))
-        return np.sqrt(texture) * speckle
+        # K-distribution: Product of Gamma (texture) and Gaussian (speckle)
+        nu_shape = kwargs.get('shape', 2.0)
+        mu_scale = kwargs.get('scale', 1.0)
+        texture_component = np.random.gamma(nu_shape, mu_scale, num_samples)
+        speckle_component = (np.random.randn(num_samples) + 1j * np.random.randn(num_samples)) / np.sqrt(2.0)
+        return np.sqrt(texture_component) * speckle_component
     else:
-        return np.sqrt(0.5) * (np.random.randn(n_samples) + 1j * np.random.randn(n_samples))
+        # Default to Rayleigh/Gaussian clutter
+        return (np.random.randn(num_samples) + 1j * np.random.randn(num_samples)) / np.sqrt(2.0)
     
-    phase = np.random.uniform(0, 2*np.pi, n_samples)
-    return mag * np.exp(1j * phase)
+    random_phases = np.random.uniform(0, 2 * np.pi, num_samples)
+    return clutter_magnitude * np.exp(1j * random_phases)
 
-def apply_clutter_map(rd_map: np.ndarray, scenario: str = 'ground') -> np.ndarray:
-    """
-    Applies spatial clutter to a Range-Doppler map.
-    
-    Scenarios:
-    - 'ground': Heavy clutter at low ranges (indices 0-20), near zero Doppler.
-    - 'weather': Broad clutter region (rain/clouds) at mid ranges.
-    """
-    rows, cols = rd_map.shape
-    clutter_overlay = np.zeros_like(rd_map)
-    
-    if scenario == 'ground':
-        # Clutter at near ranges (cols) and zero-doppler (rows near middle)
-        center_row = rows // 2
-        clutter_rows = slice(center_row - 5, center_row + 5)
-        clutter_cols = slice(0, 20)
-        
-        # Non-Gaussian magnitude (Weibull)
-        noise_mag = generate_clutter(10 * 20, distribution='weibull', shape=1.2, scale=5.0)
-        clutter_overlay[clutter_rows, clutter_cols] = np.abs(noise_mag.reshape(10, 20))
-        
-    elif scenario == 'weather':
-        # Large patch of clutter
-        noise_mag = generate_clutter(rows * (cols//4), distribution='k', shape=2.0)
-        clutter_overlay[:, cols//2 : cols//2 + cols//4] = np.abs(noise_mag.reshape(rows, cols//4)) * 2.0
-        
-    return rd_map + clutter_overlay
 
-def add_interference(signal: np.ndarray, interference_type: str = 'narrowband', **kwargs) -> np.ndarray:
+def apply_spatial_clutter_overlay(range_doppler_intensity_db: np.ndarray, 
+                                 clutter_profile: str = 'ground') -> np.ndarray:
     """
-    Simulates electronic interference or jamming.
+    Simulates environmental clutter artifacts on a processed Range-Doppler map.
     """
-    fs = kwargs.get('fs', 1.0)
-    n = len(signal)
-    t = np.arange(n) / fs
+    num_doppler_bins, num_range_bins = range_doppler_intensity_db.shape
+    clutter_mask = np.zeros_like(range_doppler_intensity_db)
     
-    if interference_type == 'narrowband':
-        freq = kwargs.get('freq', 0.1 * fs)
-        amp = kwargs.get('amp', 1.0)
-        jammer = amp * np.exp(1j * 2 * np.pi * freq * t)
-    elif interference_type == 'sweep':
-        # Swept jammer
-        f0 = kwargs.get('f0', 0)
-        f1 = kwargs.get('f1', fs/2)
-        jammer = np.exp(1j * 2 * np.pi * (f0 * t + (f1-f0)/(2*t[-1]) * t**2))
+    if clutter_profile == 'ground':
+        # Stationary ground clutter: Concentrated at low ranges and near-zero Doppler
+        center_bin = num_doppler_bins // 2
+        clutter_rows = slice(center_row - 4, center_row + 5)
+        clutter_cols = slice(0, 25)
+        
+        # Aggregate Weibull clutter components
+        clutter_samples = generate_stochastic_clutter(9 * 25, distribution='weibull', shape=1.3, scale=4.0)
+        clutter_mask[clutter_rows, clutter_cols] = np.abs(clutter_samples.reshape(9, 25))
+        
+    elif clutter_profile == 'meteorological':
+        # Rain/Weather clutter: Broad spectral spread across mid-range
+        weather_width = num_range_bins // 5
+        clutter_samples = generate_stochastic_clutter(num_doppler_bins * weather_width, distribution='k', shape=2.5)
+        clutter_mask[:, num_range_bins // 2 : num_range_bins // 2 + weather_width] = \
+            np.abs(clutter_samples.reshape(num_doppler_bins, weather_width)) * 2.5
+        
+    return range_doppler_intensity_db + clutter_mask
+
+
+def inject_electronic_interference(signal_complex: np.ndarray, 
+                                   jamming_type: str = 'narrowband_spot', 
+                                   **kwargs) -> np.ndarray:
+    """
+    Simulates hostile electronic attack (EA) signals.
+    """
+    sampling_rate_hz = kwargs.get('sampling_rate_hz', 1.0)
+    num_samples = len(signal_complex)
+    time_axis = np.arange(num_samples) / sampling_rate_hz
+    
+    if jamming_type == 'narrowband_spot':
+        # Constant frequency tone jammer
+        freq_hz = kwargs.get('freq_hz', 0.1 * sampling_rate_hz)
+        amplitude = kwargs.get('amplitude', 1.0)
+        jamming_signal = amplitude * np.exp(1j * 2 * np.pi * freq_hz * time_axis)
+    elif jamming_type == 'barrage_sweep':
+        # Swept-frequency/Chirp jammer
+        f_start = kwargs.get('f_start_hz', 0.0)
+        f_stop = kwargs.get('f_stop_hz', sampling_rate_hz / 2.0)
+        jamming_signal = np.exp(1j * 2 * np.pi * (f_start * time_axis + (f_stop - f_start) / (2 * time_axis[-1]) * time_axis**2))
     else:
-        jammer = np.zeros_like(signal)
+        jamming_signal = np.zeros_like(signal_complex)
         
-    return signal + jammer
+    return signal_complex + jamming_signal

@@ -1,73 +1,89 @@
 """
-Radar Temporal Integration and MTI
-==================================
+Radar Temporal Integration and Clutter Mitigation
+==================================================
 
-This module provides logic for multi-frame processing:
-1. Incoherent Integration: SNR improvement across frames.
-2. MTI (Moving Target Indicator): Suppression of static clutter.
-3. Pulse-to-Pulse correlation.
+This module provides specialized algorithms for processing radar data across 
+the temporal dimension (Slow-Time or Frame-to-Frame) to enhance detection 
+performance and suppress undesired static returns.
 
-Author: Radar Signal Processing Expert
+Module Features:
+----------------
+1. Coherent Integration: Complex summation across multiple pulses to maximize 
+   SNR gain (Phasor aggregation).
+2. Non-Coherent Integration (NCI): Power-domain averaging across multiple processing 
+   frames to suppress stochastic noise noise variance.
+3. Moving Target Indicator (MTI): High-pass filtering (Frame-differencing) to 
+   cancel stationary clutter (zero Doppler) while preserving moving targets.
+
+Author: Senior Signal Processing Engineer (Radar Systems Analyst)
 """
 
 import numpy as np
 from typing import List, Optional
 
-def coherent_integration(pulses: np.ndarray) -> np.ndarray:
+def perform_coherent_integration(pulse_data_matrix: np.ndarray) -> np.ndarray:
     """
-    Performs coherent integration (complex summation) across pulses.
-    Maximum theoretical processing gain: 10 * log10(N) dB.
+    Executes Coherent Integration (Complex-Mean) across the slow-time dimension.
     
-    pulses: shape (num_pulses, samples_per_pulse)
+    Processing Gain (SNR Improvement) ~ 10 * log10(num_pulses) dB.
+    Requires phase stability (coherence) across the integration interval.
     """
-    # Sum along the pulse (slow-time) dimension
-    return np.mean(pulses, axis=0)
+    # Mean reduction across the pulse (slow-time) axis (Axis 0)
+    return np.mean(pulse_data_matrix, axis=0)
 
-def incoherent_integration(frames: List[np.ndarray]) -> np.ndarray:
+def perform_non_coherent_integration(power_frame_sequence: List[np.ndarray]) -> np.ndarray:
     """
-    Performs incoherent integration (averaging magnitude) across multiple frames.
-    Improves SNR by approx sqrt(N) where N is the number of frames.
+    Executes Non-Coherent Integration (Power-Mean) across multiple Range-Doppler maps.
     
-    Frames should be linear power maps.
+    SNR improvement scales roughly with sqrt(N_frames). NCI is used when phase 
+    coherence cannot be maintained over long durations.
     """
-    if not frames:
+    if not power_frame_sequence:
         return np.array([])
     
-    # Average in linear power domain
-    avg_linear = np.mean(frames, axis=0)
-    
-    return avg_linear
+    # Statistical averaging in the linear power domain
+    return np.mean(power_frame_sequence, axis=0)
 
-def mti_filter(current_frame: np.ndarray, previous_frame: np.ndarray) -> np.ndarray:
+def clutter_cancellation_filter(current_intensity_db: np.ndarray, 
+                                previous_intensity_db: np.ndarray) -> np.ndarray:
     """
-    Simple Moving Target Indicator (MTI) filter.
-    Subtracts the previous frame from the current frame in the linear power domain.
-    Effectively cancels out high-power static targets (clutter) while preserving moving targets.
+    Implementation of a Single-Delay Line Canceler (SDLC) for clutter suppression.
+    
+    Subtracts subsequent intensity maps in the power domain to nullify 
+    returns from stationary obstacles (e.g., terrain, buildings).
     """
-    # Convert to linear power
-    p_curr = 10**(current_frame / 10)
-    p_prev = 10**(previous_frame / 10)
+    # Transform from logarithmic (dB) to linear power scale
+    power_current = 10**(current_intensity_db / 10.0)
+    power_previous = 10**(previous_intensity_db / 10.0)
     
-    # Difference (Clutter cancellation)
-    # We take the absolute difference or CLIP negative values if we care about magnitude
-    diff = p_curr - p_prev
-    diff[diff < 0] = 1e-12 # Threshold floor
+    # Linear differencing
+    cancellation_residual = power_current - power_previous
     
-    return 10 * np.log10(diff + 1e-12)
+    # Numerical stability: Clip negative power to floor level
+    cancellation_residual[cancellation_residual < 0] = 1e-12 
+    
+    return 10 * np.log10(cancellation_residual + 1e-12)
 
 class FrameAccumulator:
     """
-    Utility class to manage multi-frame state for real-time integration.
+    State-management utility for real-time Temporal Integration buffers.
     """
     def __init__(self, capacity: int = 5):
+        """
+        Args:
+            capacity: Number of recent frames to retain for non-coherent averaging.
+        """
         self.capacity = capacity
-        self.buffer = []
+        self.frame_buffer = []
         
-    def add_frame(self, frame: np.ndarray) -> np.ndarray:
-        self.buffer.append(frame)
-        if len(self.buffer) > self.capacity:
-            self.buffer.pop(0)
-        return incoherent_integration(self.buffer)
+    def add_frame(self, new_power_frame: np.ndarray) -> np.ndarray:
+        """Adds a new frame to the circular buffer and returns the integrated output."""
+        self.frame_buffer.append(new_power_frame)
+        if len(self.frame_buffer) > self.capacity:
+            self.frame_buffer.pop(0) # Maintain rolling window
+            
+        return perform_non_coherent_integration(self.frame_buffer)
     
-    def clear(self):
-        self.buffer = []
+    def reset_buffer(self):
+        """Clears all historical frame data."""
+        self.frame_buffer = []

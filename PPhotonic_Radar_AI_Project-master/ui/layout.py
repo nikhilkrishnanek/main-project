@@ -116,9 +116,9 @@ def render_main_layout():
                     
                     ppi_targets.append({
                         "id": t["id"],
-                        "range_m": rng,
+                        "estimated_range_m": rng,
                         "azimuth_deg": az,
-                        "velocity_m_s": t.get("radial_velocity", 0.0), # If we added this output or just compute it
+                        "estimated_velocity_ms": t.get("radial_velocity", 0.0),
                         "class": t.get("type", "Unknown").capitalize()
                     })
                 

@@ -1,15 +1,16 @@
 """
-System Audit & Stability Test
-============================
+Tactical Integrity & Stability Audit
+====================================
 
-Strict verification of the entire Photonic Radar pipeline.
-Checks for:
-1. Import Errors
-2. Runtime Crashes
-3. Numerical Stability (NaN/Inf)
-4. Edge Case Handling (Empty targets, Max noise)
+This module performs a rigorous end-to-end stability audit of the Cognitive 
+Photonic Radar pipeline. It verifies:
+1. Architectural Integrity: Validates multimodal imports across all 6 layers.
+2. Numerical Stability: Checks for NaN/Inf propagating through the DSP pipeline.
+3. Edge Case Resilience: Audits system behavior under extreme conditions 
+   (e.g., zero-target environments, extreme thermal noise).
+4. Functional Correctness: Ensures cognitive feedback doesn't cause pipeline stalls.
 
-Author: Principal Software Architect
+Author: Principal Software Integrity Engineer
 """
 
 import sys
@@ -17,87 +18,104 @@ import os
 import numpy as np
 import traceback
 
-# Add project root to path
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add project root to path for reliable module discovery
+sys.path.append(os.getcwd())
 
-from src.pipeline import RadarPipeline
-from src.simulation.photonic import PhotonicConfig
-from src.simulation.environment import ChannelConfig, Target
-from src.simulation.noise import NoiseConfig
+from core.engine import CognitiveRadarPipeline, TacticalIntelligenceFrame
+from photonic.signals import PhotonicConfig
+from photonic.environment import ChannelConfig, Target
+from photonic.noise import NoiseConfig
 
-def check_stability(data, name):
-    if np.any(np.isnan(data)):
-        print(f"❌ FAILURE: NaNs detected in {name}")
+
+def verify_numerical_stability(data_tensor: np.ndarray, telemetry_name: str) -> bool:
+    """
+    Validates that no numerical instabilities (NaN/Inf) are present.
+    """
+    if np.any(np.isnan(data_tensor)):
+        print(f"  [STABILITY-ERROR] NaN detected in {telemetry_name}")
         return False
-    if np.any(np.isinf(data)):
-        print(f"❌ FAILURE: Infs detected in {name}")
+    if np.any(np.isinf(data_tensor)):
+        print(f"  [STABILITY-ERROR] Infinity detected in {telemetry_name}")
         return False
     return True
 
-def run_audit():
-    print("🔹 Starting System Audit...")
-    pipeline = RadarPipeline()
+
+def run_comprehensive_system_audit():
+    """
+    Executes a multi-phase system stability audit.
+    """
+    print("[AUDIT] Initiating Tactical Radar Integrity Audit...")
     
-    # Standard Config
+    try:
+        pipeline = CognitiveRadarPipeline()
+    except Exception as e:
+        print(f"[AUDIT-FAIL] Failed to instantiate CognitiveRadarPipeline: {e}")
+        return False
+    
+    # Baseline Configurations
     p_cfg = PhotonicConfig()
     c_cfg = ChannelConfig()
     n_cfg = NoiseConfig()
     
-    tests = [
-        ("Normal Operation", [Target(100, 10, 0, "Test")]),
-        ("Zero Targets", []),
-        ("High Noise", [Target(100, 10, 0, "Test")], {"noise_level_db": 10.0}), # Extreme noise
-        ("Silence (Low Noise)", [Target(100, 10, 0, "Test")], {"noise_level_db": -200.0}) # Underflow check
+    # Defined Audit Scenarios
+    audit_scenarios = [
+        ("Nominal Operation", [Target(100, 10, 0, "Drone")]),
+        ("Zero-Target Environment", []),
+        ("Extreme Thermal Noise", [Target(100, 10, 0, "Drone")], {"noise_level_db": 10.0}),
+        ("Numerical Signal Underflow", [Target(100, 10, 0, "Drone")], {"noise_level_db": -200.0})
     ]
     
-    all_passed = True
+    system_integral = True
     
-    for title, targets, *extra in tests:
-        print(f"   Testing: {title}...", end=" ")
+    for title, targets, *params in audit_scenarios:
+        print(f"  > Scenario: {title}...", end=" ", flush=True)
         
-        # Apply overrides
-        local_c = ChannelConfig()
-        if extra:
-            for k,v in extra[0].items():
-                setattr(local_c, k, v)
+        # Apply operational overrides for the audit
+        active_channel = ChannelConfig()
+        if params:
+            for key, value in params[0].items():
+                if hasattr(active_channel, key):
+                    setattr(active_channel, key, value)
                 
         try:
-            frame = pipeline.run(p_cfg, local_c, n_cfg, targets)
+            # Execute tactical frame
+            intel_frame = pipeline.execute_tactical_processing_frame(p_cfg, active_channel, n_cfg, targets)
             
-            # Checks
-            checks = [
-                check_stability(frame.rx_signal, "Rx Signal"),
-                check_stability(frame.rd_map, "RD Map"),
-                check_stability(frame.spectrogram, "Spectrogram")
+            # Numerical Integrity Verification
+            stability_checks = [
+                verify_numerical_stability(intel_frame.raw_rx_signal, "I/Q Waveform"),
+                verify_numerical_stability(intel_frame.range_doppler_map, "RD Intensity Map"),
+                verify_numerical_stability(intel_frame.micro_doppler_spectrogram, "µDoppler Spectrogram")
             ]
             
-            if all(checks):
+            if all(stability_checks):
                 print("✅ PASSED")
             else:
-                print("⚠️ STABILITY ISSUE")
-                all_passed = False
+                print("⚠️ STABILITY_WARN")
+                system_integral = False
                 
-        except Exception as e:
-            print(f"❌ CRASH detected: {e}")
+        except Exception as crash_error:
+            print(f"❌ PIPELINE_CRASH: {crash_error}")
             traceback.print_exc()
-            all_passed = False
+            system_integral = False
             
-    # Import Audit
-    print("\n🔹 Checking Imports...")
+    # Sub-system Import Integrity
+    print("\n[AUDIT] Verifying UI and Integration Imports...")
     try:
-        import src.ui.components
-        import app
-        print("✅ UI Modules Importable")
+        import ui.components
+        import ui.layout
+        print("  > UI Module Architecture: ✅ INTEGRAL")
     except ImportError as e:
-        print(f"❌ Import Error: {e}")
-        all_passed = False
+        print(f"  > UI Module Architecture: ❌ CORRUPT ({e})")
+        system_integral = False
         
-    return all_passed
+    return system_integral
+
 
 if __name__ == "__main__":
-    if run_audit():
-        print("\n🌟 SYSTEM AUDIT PASSED")
+    if run_comprehensive_system_audit():
+        print("\n[AUDIT-PASS] TACTICAL SYSTEM INTEGRITY CONFIRMED")
         sys.exit(0)
     else:
-        print("\n💀 SYSTEM AUDIT FAILED")
+        print("\n[AUDIT-FAIL] SYSTEM ARCHITECTURE COMPROMISED")
         sys.exit(1)

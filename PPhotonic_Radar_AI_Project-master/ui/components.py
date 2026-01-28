@@ -18,7 +18,7 @@ from photonic.signals import PhotonicConfig
 from photonic.environment import ChannelConfig, Target
 from photonic.noise import NoiseConfig
 from photonic.scenarios import ScenarioGenerator
-from ai_models.model import list_classes
+from ai_models.model import get_tactical_classes
 import plotly.graph_objects as go
 import plotly.express as px
 
@@ -58,7 +58,7 @@ def render_ppi(targets: List[Dict], history_size: int = 5, scan_angle: float = 0
 
     for t in targets:
         tid = t['id']
-        r_now = t['range_m']
+        r_now = t['estimated_range_m']
         # Use provided azimuth or default
         theta_now = t.get('azimuth_deg', (tid * 45) % 360) 
         
@@ -154,16 +154,16 @@ def render_target_table(targets: List[Dict]):
     for t in targets:
         # Threat assessment logic
         threat_score = 0
-        if t['range_m'] < 500: threat_score += 50 # Proximity
-        if abs(t['velocity_m_s']) > 100: threat_score += 30 # High speed
+        if t['estimated_range_m'] < 500: threat_score += 50 # Proximity
+        if abs(t['estimated_velocity_ms']) > 100: threat_score += 30 # High speed
         if t.get('class') == 'Missile': threat_score += 20 # Weaponry
         
         status = "CRITICAL" if threat_score >= 80 else "ELEVATED" if threat_score >= 40 else "NOMINAL"
         
         formatted_data.append({
             "ID": f"INV-{t['id']:03d}",
-            "RANGE (m)": f"{t['range_m']:.1f}",
-            "VELOCITY (m/s)": f"{t['velocity_m_s']:.1f}",
+            "RANGE (m)": f"{t['estimated_range_m']:.1f}",
+            "VELOCITY (m/s)": f"{t['estimated_velocity_ms']:.1f}",
             "CLASSIFICATION": t.get('class', 'Unknown').upper(),
             "STATUS": status,
             "THREAT": threat_score
@@ -187,13 +187,13 @@ def render_threat_panel(detections: List[Dict]):
     """
     st.markdown("### ⚠️ THREAT ALERT PANEL")
     for det in detections:
-        risk = "HIGH" if det.get('range_m', 1000) < 300 else "MEDIUM"
+        risk = "HIGH" if det.get('estimated_range_m', 1000) < 300 else "MEDIUM"
         color = "#ff3333" if risk == "HIGH" else "#ffcc00"
         
         st.markdown(f"""
             <div style="border-left: 5px solid {color}; padding: 10px; background-color: #1a0a0a; margin-bottom: 5px;">
                 <span style="color: {color}; font-weight: bold;">[{risk} RISK]</span> 
-                Target ID {det['id']} at {det['range_m']:.1f}m | Velocity: {det['velocity_m_s']:.1f}m/s
+                Target ID {det['id']} at {det['estimated_range_m']:.1f}m | Velocity: {det['estimated_velocity_ms']:.1f}m/s
             </div>
         """, unsafe_allow_html=True)
 
@@ -248,11 +248,11 @@ def render_sidebar() -> tuple:
         ) * 1e3
     
     p_cfg = PhotonicConfig(
-        fs=25e9, 
-        f_start=fc, 
-        bandwidth=bw, 
-        duration=dur, 
-        laser_linewidth=lw
+        sampling_rate_hz=25e9, 
+        start_frequency_hz=fc, 
+        sweep_bandwidth_hz=bw, 
+        chirp_duration_s=dur, 
+        laser_linewidth_hz=lw
     )
     
     # --- 2. Channel ---
@@ -293,7 +293,7 @@ def render_sidebar() -> tuple:
             t_rng = col1.number_input("Range (m)", 10, 8000, 150)
             t_vel = col2.number_input("Vel (m/s)", -800, 800, 30)
             t_rcs = col1.number_input("RCS (dB)", -40, 60, 0)
-            t_type = col2.selectbox("Classification", list_classes())
+            t_type = col2.selectbox("Classification", get_tactical_classes())
             if st.form_submit_button("DEPLOY"):
                 st.session_state.targets.append(Target(float(t_rng), float(t_vel), float(t_rcs), t_type))
                 st.rerun()
