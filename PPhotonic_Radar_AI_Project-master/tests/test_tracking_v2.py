@@ -62,7 +62,7 @@ def test_track_lifecycle():
 def test_track_deletion():
     """Test if tracks are deleted after too many misses."""
     dt = 0.1
-    manager = TrackManager(dt=dt)
+    manager = TrackManager(dt=dt, max_coast_frames=10)
     
     # Provisional deletion (2 misses)
     manager.update([(500.0, 0.0)])

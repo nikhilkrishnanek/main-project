@@ -50,8 +50,6 @@ class DopplerWaterfall(QWidget):
         norm = np.max(doppler_profile) + 1e-9
         doppler_profile = doppler_profile / norm
         
-        doppler_profile = doppler_profile / norm
-        
         # 1. Check and Resize Buffer if needed
         if len(doppler_profile) != self.buffer.shape[0]:
             self.n_doppler = len(doppler_profile)

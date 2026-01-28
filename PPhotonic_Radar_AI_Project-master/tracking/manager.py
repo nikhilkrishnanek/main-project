@@ -79,7 +79,7 @@ class RadarTrack:
         return self.state != TrackState.DELETED
 
 class TrackManager:
-    def __init__(self, dt: float, association_gate: float = 3.5, max_coast_frames: int = 500):
+    def __init__(self, dt: float, association_gate: float = 3.5, max_coast_frames: int = 20):
         """
         Args:
             dt: Sampling time.
@@ -142,20 +142,22 @@ class TrackManager:
             
         # 6. Cleanup
         self.tracks = [t for t in self.tracks if t.active]
+        if len(self.tracks) > 50: # HARD LIMIT to prevent lag in extreme scenarios
+            self.tracks = sorted(self.tracks, key=lambda x: x.hits, reverse=True)[:50]
         
         # 7. Format Output Summary
         return [
-            {
-                "id": t.track_id,
-                "state": t.state.name,
-                "range_m": float(t.kf.x[0]),
-                "velocity_m_s": float(t.kf.x[1]),
-                "acceleration_m_s2": float(t.kf.x[2]),
-                "confidence": self._calculate_confidence(t),
-                "age": t.age
-            }
-            for t in self.tracks if t.state != TrackState.PROVISIONAL or t.hits >= 1
-        ]
+                {
+                    "id": t.track_id,
+                    "state": t.state.name,
+                    "range_m": float(t.kf.x[0]),
+                    "velocity_m_s": float(t.kf.x[1]),
+                    "acceleration_m_s2": float(t.kf.x[2]),
+                    "confidence": self._calculate_confidence(t),
+                    "age": t.age
+                }
+                for t in self.tracks if t.state in [TrackState.CONFIRMED, TrackState.COASTING]
+            ]
 
     def _calculate_confidence(self, track: RadarTrack) -> float:
         """Heuristic confidence based on hits and state."""

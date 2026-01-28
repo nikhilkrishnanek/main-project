@@ -70,7 +70,7 @@ class RadarDSPEngine:
         # 5. Log Transformation (dB)
         rd_db = 10 * np.log10(rd_final_power + 1e-12)
         
-        return rd_db
+        return rd_db, rd_final_power
 
 def create_rd_map_explicit(signal: np.ndarray, num_pulses: int, samples_per_pulse: int, config: Dict) -> np.ndarray:
     """

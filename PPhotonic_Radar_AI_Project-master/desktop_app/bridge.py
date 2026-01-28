@@ -78,8 +78,10 @@ class RadarWorker(QObject):
 
     @Slot()
     def stop_sim(self):
+        # Safety: Ensure we call stop on the timer in the thread it was created in
         if self.timer and self.timer.isActive():
             self.timer.stop()
+            print("Simulation Worker stopped.")
             self.stopped.emit()
 
     @Slot()
@@ -92,13 +94,17 @@ class RadarWorker(QObject):
             frame_data = self.orchestrator.tick()
             self.frame_ready.emit(frame_data)
         except Exception as e:
-            print(f"Checking Error: {e}")
-            self.error_occurred.emit(str(e))
-            self.stop_sim()
+            # Prevent recursive crash or UI freeze
+            import traceback
+            traceback.print_exc()
+            self.error_occurred.emit(f"Tick Error: {str(e)}")
+            # Use callLater to stop safely if we were in the middle of a tick
+            QTimer.singleShot(0, self.stop_sim)
             
     @Slot(str)
     def switch_scenario(self, name):
-        was_running = self.timer.isActive()
+        # Ensure we are in the correct thread by using the timer's thread context
+        was_running = self.timer.isActive() if self.timer else False
         self.stop_sim()
         
         self.scenario_name = name

@@ -32,17 +32,15 @@ def range_doppler_map(pulses: np.ndarray, n_range: int = 128, n_doppler: int = 1
     return np.abs(rd)
 
 
-def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-4) -> Tuple[np.ndarray, float]:
+def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-4, min_pwr: float = 1e-3) -> Tuple[np.ndarray, float]:
     """
     Standard Cell-Averaging CFAR (CA-CFAR) for 2D Range-Doppler maps.
     Optimized for Square-Law detectors (Power).
+    Includes a min_pwr threshold to filter out extreme noise-floor triggers.
     """
     from scipy.signal import fftconvolve
 
     # Ensure rd_map is in linear power
-    # If the map is in dB, we must convert it back or change the formula
-    # For this implementation, we assume rd_map is linear power as per engine.py
-    
     # Square window dimensions
     full_side = 2 * train + 2 * guard + 1
     inner_side = 2 * guard + 1
@@ -59,8 +57,6 @@ def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-
     num_train = max(1, num_train)
     
     # ALPHA CALCULATION (Square-law detector)
-    # Threshold T = P_noise * alpha
-    # P_fa = (1 + alpha/N)^-N  => alpha = N * (Pfa^(-1/N) - 1)
     alpha = num_train * (pfa ** (-1.0 / num_train) - 1.0)
 
     # Training sum = total window sum - guard/CUT sum
@@ -71,7 +67,9 @@ def ca_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-
     noise_level[noise_level <= 0] = 1e-12
 
     threshold = noise_level * alpha
-    det_map = rd_map > threshold
+    
+    # Combined detection: CFAR threshold and absolute power floor
+    det_map = (rd_map > threshold) & (rd_map > min_pwr)
 
     return det_map, float(alpha)
 
@@ -119,10 +117,33 @@ def os_cfar(rd_map: np.ndarray, guard: int = 2, train: int = 8, pfa: float = 1e-
     return det_map, float(alpha)
 
 
-from signal_processing.transforms import compute_range_doppler_map
+def cluster_detections(det_map: np.ndarray, rd_map: np.ndarray) -> List[Tuple[int, int]]:
+    """
+    Groups connected detection pixels and picks the local maximum for each cluster.
+    Prevents one target from generating multiple tracks.
+    """
+    from scipy.ndimage import label
+    
+    if not np.any(det_map):
+        return []
+        
+    labeled_array, num_features = label(det_map)
+    centroids = []
+    
+    for i in range(1, num_features + 1):
+        # Find indices of this cluster
+        coords = np.argwhere(labeled_array == i)
+        
+        # Pick the coordinate with the maximum power in rd_map
+        cluster_powers = [rd_map[r, c] for r, c in coords]
+        max_idx = np.argmax(cluster_powers)
+        centroids.append(tuple(coords[max_idx]))
+        
+    return centroids
+
 
 def detect_targets_from_raw(signal: np.ndarray, fs: float = 4096, n_range: int = 128, n_doppler: int = 128,
-                            method: str = "ca", **kwargs) -> Dict:
+                            method: str = "ca", cluster: bool = True, **kwargs) -> Dict:
     """Full detection pipeline from raw complex signal to detection list.
 
     Returns dict with rd_map, det_map, detections (list of (i,j,value)), and stats.
@@ -138,6 +159,7 @@ def detect_targets_from_raw(signal: np.ndarray, fs: float = 4096, n_range: int =
         }
 
     # Use centralized transform
+    from signal_processing.transforms import compute_range_doppler_map
     rd_map = compute_range_doppler_map(signal, n_range=n_range, n_doppler=n_doppler)
 
     if method.lower().startswith("ca"):
@@ -145,13 +167,18 @@ def detect_targets_from_raw(signal: np.ndarray, fs: float = 4096, n_range: int =
     else:
         det_map, alpha = os_cfar(rd_map, **kwargs)
 
-    inds = list(zip(*np.where(det_map)))
+    if cluster:
+        inds = cluster_detections(det_map, rd_map)
+    else:
+        inds = list(zip(*np.where(det_map)))
+        
     detections = [(int(i), int(j), float(rd_map[i, j])) for i, j in inds]
 
     stats = {
         "num_detections": len(detections),
         "alpha": alpha,
-        "pfa_requested": kwargs.get("pfa", None)
+        "pfa_requested": kwargs.get("pfa", None),
+        "clustered": cluster
     }
 
     log_event(f"Detection stats: {stats}", level="info")

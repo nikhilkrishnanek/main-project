@@ -181,9 +181,11 @@ class SimulationOrchestrator:
         # 3. DSP & Detection
         self.perf.start_phase("dsp")
         pulse_matrix = beat_signal.reshape(n_pulses, samples_per_pulse)
-        rd_map = self.dsp.process_frame(pulse_matrix)
-        det_map, _ = ca_cfar(rd_map)
-        detections = list(zip(*np.where(det_map)))
+        rd_map, rd_power = self.dsp.process_frame(pulse_matrix) # Unpack dB and Linear maps
+        det_map, _ = ca_cfar(rd_power, min_pwr=0.005) 
+        
+        from signal_processing.detection import cluster_detections
+        detections = cluster_detections(det_map, rd_power) # Collapse redundant peaks
         
         if self.frame_count % 50 == 0:
             # Periodic debug only
